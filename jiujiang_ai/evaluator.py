@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Mapping
 
 from .hand_split import analyze_hand
 from .ting import winning_tile_counts
@@ -14,10 +15,16 @@ class DiscardDecision:
     shanten_after_discard: int
     effective_count: int
     winning_tiles: dict[int, int]
+    safety_score: int
 
 
-def score_discards(hand: list[int], candidate_cards: list[list[int]]) -> dict[int, DiscardDecision]:
+def score_discards(
+    hand: list[int],
+    candidate_cards: list[list[int]],
+    visible_discards: Mapping[int, int] | None = None,
+) -> dict[int, DiscardDecision]:
     validate_hand(hand)
+    visible_discards = visible_discards or {}
     scores: dict[int, DiscardDecision] = {}
     for card_group in candidate_cards:
         if not card_group:
@@ -38,20 +45,25 @@ def score_discards(hand: list[int], candidate_cards: list[list[int]]) -> dict[in
             shanten_after_discard=analysis.shanten,
             effective_count=effective_count,
             winning_tiles=winning_tiles,
+            safety_score=int(visible_discards.get(discard, 0)),
         )
     return scores
 
 
-def choose_discard(hand: list[int], candidate_cards: list[list[int]]) -> DiscardDecision:
-    scores = score_discards(hand, candidate_cards)
+def choose_discard(
+    hand: list[int],
+    candidate_cards: list[list[int]],
+    visible_discards: Mapping[int, int] | None = None,
+) -> DiscardDecision:
+    scores = score_discards(hand, candidate_cards, visible_discards=visible_discards)
     if not scores:
         raise ValueError("no valid discard candidates")
     return max(scores.values(), key=_discard_sort_key)
 
 
-def hand_value(hand: list[int]) -> float:
-    analysis = analyze_hand(hand)
-    return _score_analysis(analysis, _effective_draw_count(hand, analysis.shanten))
+def hand_value(hand: list[int], fixed_melds: int = 0) -> float:
+    analysis = analyze_hand(hand, fixed_melds=fixed_melds)
+    return _score_analysis(analysis, _effective_draw_count(hand, analysis.shanten, fixed_melds=fixed_melds))
 
 
 def _discard_sort_key(decision: DiscardDecision) -> tuple:
@@ -60,8 +72,9 @@ def _discard_sort_key(decision: DiscardDecision) -> tuple:
         return (
             1,
             decision.effective_count,
-            decision.discard != HONGZHONG,
             decision.score,
+            decision.safety_score,
+            decision.discard != HONGZHONG,
             -decision.shanten_after_discard,
             -decision.discard,
         )
@@ -71,20 +84,21 @@ def _discard_sort_key(decision: DiscardDecision) -> tuple:
         0,
         decision.score,
         decision.effective_count,
+        decision.safety_score,
         decision.discard != HONGZHONG,
         -decision.shanten_after_discard,
         -decision.discard,
     )
 
 
-def _effective_draw_count(hand: list[int], current_shanten: int) -> int:
+def _effective_draw_count(hand: list[int], current_shanten: int, fixed_melds: int = 0) -> int:
     remaining = remaining_tile_counts(hand)
     count = 0
     for tile in JIUJIANG_TILE_CODES:
         if remaining[tile] <= 0:
             continue
         next_hand = sorted([*hand, tile])
-        if analyze_hand(next_hand).shanten < current_shanten:
+        if analyze_hand(next_hand, fixed_melds=fixed_melds).shanten < current_shanten:
             count += remaining[tile]
     return count
 

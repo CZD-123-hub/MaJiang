@@ -27,6 +27,21 @@ class JiujiangApiTests(unittest.TestCase):
         self.assertEqual(action_type, ACTION_DISCARD)
         self.assertEqual(action_card, [0x08])
 
+    def test_discards_visible_safe_tile_from_action_history_when_offense_is_equal(self):
+        hand = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x09, 0x18]
+        data = {
+            "action_cards": {"7": [[0x09], [0x18]]},
+            "player_hand_cards": [hand, [], [], []],
+            "acting_do_player_position": 0,
+            "played_cards": [[], [], [], []],
+            "action_seq": [[1, ACTION_DISCARD, 0x18], [2, ACTION_DISCARD, 0x18]],
+        }
+
+        action_type, action_card = get_action(data)
+
+        self.assertEqual(action_type, ACTION_DISCARD)
+        self.assertEqual(action_card, [0x18])
+
     def test_rejects_chi_and_hongzhong_peng_then_passes(self):
         data = {"action_cards": {"1": [[0x01, 0x02, 0x03]], "2": [[HONGZHONG, HONGZHONG, HONGZHONG]], "0": []}}
 
@@ -42,6 +57,34 @@ class JiujiangApiTests(unittest.TestCase):
 
         self.assertEqual(action_type, ACTION_GANG)
         self.assertEqual(action_card, [0x02, 0x02, 0x02, 0x02])
+
+    def test_skips_angang_when_gang_would_make_hand_worse(self):
+        # 这副牌把四张 6 筒直接暗杠后，手里有效结构明显减少，第一版收益判断应选择过牌。
+        hand = [0x06, 0x07, 0x11, 0x14, 0x17, 0x25, 0x26, 0x26, 0x26, 0x26, 0x28, 0x29, HONGZHONG, HONGZHONG]
+        data = {
+            "action_cards": {"5": [[0x26, 0x26, 0x26, 0x26]], "0": []},
+            "player_hand_cards": [hand, [], [], []],
+            "acting_do_player_position": 0,
+        }
+
+        action_type, action_card = get_action(data)
+
+        self.assertEqual(action_type, ACTION_PASS)
+        self.assertEqual(action_card, [])
+
+    def test_keeps_angang_when_gang_does_not_reduce_progress(self):
+        # 这副牌暗杠 1 万后整体向听不变，当前第一版策略仍然允许杠牌。
+        hand = [0x01, 0x01, 0x01, 0x01, 0x05, 0x06, 0x06, 0x14, 0x21, 0x21, 0x24, 0x25, 0x27, 0x28]
+        data = {
+            "action_cards": {"5": [[0x01, 0x01, 0x01, 0x01]], "0": []},
+            "player_hand_cards": [hand, [], [], []],
+            "acting_do_player_position": 0,
+        }
+
+        action_type, action_card = get_action(data)
+
+        self.assertEqual(action_type, ACTION_GANG)
+        self.assertEqual(action_card, [0x01, 0x01, 0x01, 0x01])
 
     def test_skips_gang_when_current_hand_is_already_ting(self):
         # 当前 13 张已经听 9 万/红中时，不为了杠牌破坏听牌结构。

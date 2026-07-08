@@ -30,12 +30,12 @@ def is_four_hongzhong(tiles: list[int] | tuple[int, ...]) -> bool:
     return list(tiles).count(HONGZHONG) >= 4
 
 
-def analyze_hand(hand: list[int] | tuple[int, ...]) -> HandAnalysis:
+def analyze_hand(hand: list[int] | tuple[int, ...], fixed_melds: int = 0) -> HandAnalysis:
     validate_hand(hand)
     hongzhong_count = list(hand).count(HONGZHONG)
     ordinary = tuple(sorted(tile for tile in hand if tile != HONGZHONG))
     partials = _split_counts(_counts_tuple(ordinary))
-    return min((_apply_hongzhong(partial, hongzhong_count) for partial in partials), key=_analysis_sort_key)
+    return min((_apply_hongzhong(partial, hongzhong_count, fixed_melds) for partial in partials), key=_analysis_sort_key)
 
 
 def _counts_tuple(tiles: tuple[int, ...]) -> tuple[int, ...]:
@@ -103,11 +103,11 @@ def _remove_tiles(counts: tuple[int, ...], tiles: tuple[int, ...]) -> tuple[int,
     return tuple(new_counts)
 
 
-def _apply_hongzhong(partial: _Partial, hongzhong_count: int) -> HandAnalysis:
+def _apply_hongzhong(partial: _Partial, hongzhong_count: int, fixed_melds: int) -> HandAnalysis:
     best: HandAnalysis | None = None
     for pair_mode in range(3):
         for meld_red_count in range(hongzhong_count + 1):
-            analysis = _try_hongzhong_plan(partial, hongzhong_count, pair_mode, meld_red_count)
+            analysis = _try_hongzhong_plan(partial, hongzhong_count, pair_mode, meld_red_count, fixed_melds)
             if analysis is None:
                 continue
             if best is None or _analysis_sort_key(analysis) < _analysis_sort_key(best):
@@ -121,6 +121,7 @@ def _try_hongzhong_plan(
     hongzhong_count: int,
     pair_mode: int,
     meld_red_count: int,
+    fixed_melds: int,
 ) -> HandAnalysis | None:
     pairs = partial.pairs
     melds = partial.melds
@@ -154,7 +155,7 @@ def _try_hongzhong_plan(
     leftovers -= promoted_leftovers
     used += promoted_leftovers * 2
 
-    return _calculate_analysis(melds, pairs, taatsu, leftovers, hongzhong_count, used)
+    return _calculate_analysis(melds, pairs, taatsu, leftovers, hongzhong_count, used, fixed_melds)
 
 
 def _calculate_analysis(
@@ -164,8 +165,9 @@ def _calculate_analysis(
     leftovers: int,
     hongzhong_count: int,
     hongzhong_used: int,
+    fixed_melds: int,
 ) -> HandAnalysis:
-    capped_melds = min(4, melds)
+    capped_melds = min(4, fixed_melds + melds)
     has_pair = pairs > 0
     extra_pairs_as_taatsu = max(0, pairs - (1 if has_pair else 0))
     incomplete = extra_pairs_as_taatsu + taatsu

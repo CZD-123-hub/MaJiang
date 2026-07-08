@@ -47,5 +47,15 @@ class JiujiangEvaluatorTests(unittest.TestCase):
         self.assertTrue(decision.winning_tiles)
 
 
+    def test_choose_discard_prefers_visible_safe_tile_when_offense_is_equal(self):
+        # 两个候选弃牌进攻价值相同时，优先打场上已经出现过的相对安全牌。
+        hand = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x09, 0x18]
+        candidates = [[0x09], [0x18]]
+
+        decision = choose_discard(hand, candidates, visible_discards={0x18: 2})
+
+        self.assertEqual(decision.discard, 0x18)
+
+
 if __name__ == "__main__":
     unittest.main()
