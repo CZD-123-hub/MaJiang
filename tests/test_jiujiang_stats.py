@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+import json
 
 from jiujiang_ai.api import round_end
 from jiujiang_ai.stats import (
@@ -81,6 +82,20 @@ class JiujiangStatsTests(unittest.TestCase):
         self.assertEqual(report["team"]["total_score"], 2.0)
         self.assertAlmostEqual(report["team"]["average_round_score"], 2.0 / 3.0)
 
+    def test_summarize_match_report_counts_multi_win_rounds_for_team(self):
+        rounds = [
+            {"winners": [0, 2], "dianpao_player": 1, "scores": [2, -4, 2, 0]},
+            {"winner": 3, "scores": [-2, 0, 0, 2], "dianpao_player": 0},
+        ]
+
+        report = summarize_match_report(rounds, our_players=[0, 2])
+
+        self.assertEqual(report["overall"]["multi_win_rounds"], 1)
+        self.assertEqual(report["overall"]["multi_win_winner_count"], 2)
+        self.assertEqual(report["overall"]["multi_win_by_dianpao_player"], {"1": 1})
+        self.assertEqual(report["team"]["multi_win_rounds"], 1)
+        self.assertEqual(report["team"]["multi_win_wins"], 2)
+
     def test_record_round_end_appends_jsonl_log(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             log_path = Path(temp_dir) / "round_end.jsonl"
@@ -90,19 +105,31 @@ class JiujiangStatsTests(unittest.TestCase):
             self.assertEqual(stats["total_rounds"], 1)
             lines = log_path.read_text(encoding="utf-8").splitlines()
             self.assertEqual(len(lines), 1)
-            self.assertIn('"winner": 0', lines[0])
+            payload = json.loads(lines[0])
+            self.assertIn("timestamp", payload)
+            self.assertEqual(payload["data"]["winner"], 0)
+            self.assertEqual(payload["stats"]["total_rounds"], 1)
 
     def test_load_round_logs_reads_jsonl_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             log_path = Path(temp_dir) / "round_end.jsonl"
-            append_round_log({"winner": 0, "scores": [1, -1, 0, 0]}, log_path=log_path)
-            append_round_log({"winner": 2, "scores": [0, -1, 1, 0]}, log_path=log_path)
+            append_round_log({"winner": 0, "scores": [1, -1, 0, 0]}, {"total_rounds": 1}, log_path=log_path)
+            append_round_log({"winner": 2, "scores": [0, -1, 1, 0]}, {"total_rounds": 2}, log_path=log_path)
 
             rounds = load_round_logs(log_path)
 
             self.assertEqual(len(rounds), 2)
             self.assertEqual(rounds[0]["winner"], 0)
             self.assertEqual(rounds[1]["winner"], 2)
+
+    def test_load_round_logs_accepts_legacy_plain_round_lines(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "round_end.jsonl"
+            log_path.write_text('{"winner": 0, "scores": [1, -1, 0, 0]}\n', encoding="utf-8")
+
+            rounds = load_round_logs(log_path)
+
+            self.assertEqual(rounds, [{"winner": 0, "scores": [1, -1, 0, 0]}])
 
 
 if __name__ == "__main__":

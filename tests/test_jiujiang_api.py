@@ -1,6 +1,6 @@
 import unittest
 
-from jiujiang_ai.api import get_action, round_end
+from jiujiang_ai.api import _legal_discard_candidates, get_action, round_end
 from jiujiang_ai.rules import (
     ACTION_ANGANG,
     ACTION_BUGANG,
@@ -15,6 +15,35 @@ from jiujiang_ai.tiles import HONGZHONG
 
 
 class JiujiangApiTests(unittest.TestCase):
+    def test_filters_hongzhong_discard_when_run_hongzhong_disabled(self):
+        hand = [HONGZHONG, 0x01]
+        data = {"room_options": {"run_hongzhong_double": False}}
+
+        candidates = _legal_discard_candidates([[HONGZHONG], [0x01]], hand, data)
+
+        self.assertEqual(candidates, [[0x01]])
+
+    def test_keeps_hongzhong_discard_when_run_hongzhong_enabled(self):
+        hand = [HONGZHONG, 0x01]
+        data = {"room_options": {"run_hongzhong_double": True}}
+
+        candidates = _legal_discard_candidates([[HONGZHONG], [0x01]], hand, data)
+
+        self.assertEqual(candidates, [[HONGZHONG], [0x01]])
+
+    def test_only_hongzhong_discard_candidate_returns_pass_when_run_hongzhong_disabled(self):
+        data = {
+            "action_cards": {"7": [[HONGZHONG]]},
+            "player_hand_cards": [[HONGZHONG, 0x01, 0x04, 0x07, 0x11, 0x14, 0x17, 0x21, 0x24, 0x27, 0x02, 0x05, 0x08, 0x29], [], [], []],
+            "acting_do_player_position": 0,
+            "room_options": {"run_hongzhong_double": False},
+        }
+
+        action_type, action_card = get_action(data)
+
+        self.assertEqual(action_type, ACTION_PASS)
+        self.assertEqual(action_card, [])
+
     def test_hu_has_priority(self):
         data = {
             "action_cards": {"4": [], "7": [[0x01]]},

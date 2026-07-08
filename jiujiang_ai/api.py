@@ -21,7 +21,8 @@ from .rules import (
 )
 from .stats import record_round_end
 from .ting import winning_tile_counts
-from .tiles import JIUJIANG_TILE_SET
+from .tiles import HONGZHONG, JIUJIANG_TILE_SET
+from .win_context import detect_win_context
 
 
 def get_action(data: dict) -> tuple[int, list[int]]:
@@ -63,9 +64,13 @@ def get_action(data: dict) -> tuple[int, list[int]]:
         return ACTION_PENG, best_peng
 
     if ACTION_DISCARD in action_cards and hand:
+        discard_candidates = _legal_discard_candidates(action_cards[ACTION_DISCARD], hand, data)
+        # 未开启跑红中翻倍时不能出红中；如果候选只剩红中，也不能崩溃。
+        if not discard_candidates:
+            return ACTION_PASS, []
         decision = choose_discard(
             hand,
-            _legal_discard_candidates(action_cards[ACTION_DISCARD], hand),
+            discard_candidates,
             fixed_melds=fixed_melds,
             visible_discards=_visible_discard_counts(data),
             remaining_counts=remaining_counts,
@@ -82,7 +87,13 @@ def get_action(data: dict) -> tuple[int, list[int]]:
 def round_end(data: dict) -> dict[str, object]:
     # 对局结束后累计统计结果，方便后续自博弈和与其他 AI 对打时汇总。
     stats = record_round_end(data)
-    return {"status": "ok", "received": True, "data": data, "stats": stats}
+    return {
+        "status": "ok",
+        "received": True,
+        "data": data,
+        "stats": stats,
+        "win_context": detect_win_context(data).to_dict(),
+    }
 
 
 def _acting_hand(data: dict) -> list[int]:
@@ -99,14 +110,36 @@ def _jiujiang_only(cards: list[int]) -> list[int]:
     return [card for card in cards if card in JIUJIANG_TILE_SET]
 
 
-def _legal_discard_candidates(candidate_cards: list[list[int]], hand: list[int]) -> list[list[int]]:
-    # 只保留九江合法牌，并且必须确实在当前手牌中。
+def _legal_discard_candidates(candidate_cards: list[list[int]], hand: list[int], data: dict) -> list[list[int]]:
+    # 未开启跑红中翻倍时，红中不能作为弃牌候选。
     hand_set = set(hand)
+    run_hongzhong_enabled = _run_hongzhong_enabled(data)
     return [
         cards
         for cards in candidate_cards
-        if cards and cards[0] in JIUJIANG_TILE_SET and cards[0] in hand_set
+        if cards
+        and cards[0] in JIUJIANG_TILE_SET
+        and cards[0] in hand_set
+        and (run_hongzhong_enabled or cards[0] != HONGZHONG)
     ]
+
+
+def _run_hongzhong_enabled(data: dict) -> bool:
+    # 兼容任务书里列出的几种字段名，未配置时默认不开启。
+    option_sources = [
+        data,
+        data.get("room_options") or {},
+        data.get("game_options") or {},
+        data.get("options") or {},
+    ]
+    keys = (
+        "run_hongzhong_double",
+        "allow_discard_hongzhong",
+        "hongzhong_double",
+        "跑红中翻倍",
+        "出红中翻倍",
+    )
+    return any(_truthy(source.get(key)) for source in option_sources for key in keys)
 
 
 def _hu_options(data: dict) -> HuOptions:

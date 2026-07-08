@@ -14,13 +14,16 @@ from .stats import (
 )
 from .ting import is_ting, ting_discards, winning_tile_counts
 from .tiles import HONGZHONG
+from .win_context import WinContext, detect_win_context
 
 __all__ = [
     "DEFAULT_ROUND_LOG_PATH",
     "HONGZHONG",
     "HuOptions",
+    "WinContext",
     "append_round_log",
     "can_hu",
+    "detect_win_context",
     "get_stats",
     "get_action",
     "is_ting",
