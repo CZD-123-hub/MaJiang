@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
+from pathlib import Path
 from threading import Lock
 from typing import Any
 
 _LOCK = Lock()
+DEFAULT_ROUND_LOG_PATH = Path(__file__).resolve().parents[1] / "logs" / "jiujiang_round_end.jsonl"
 
 
 def _empty_stats() -> dict[str, Any]:
@@ -34,11 +37,43 @@ def get_stats() -> dict[str, Any]:
         return deepcopy(_STATS)
 
 
-def record_round_end(data: dict[str, Any]) -> dict[str, Any]:
-    """记录一局结束数据，并返回更新后的统计快照。"""
+def record_round_end(data: dict[str, Any], log_path: str | Path | None = None) -> dict[str, Any]:
+    """记录一局结束数据，更新内存统计并追加写入本地日志。"""
     with _LOCK:
         _accumulate_round(_STATS, data)
+        try:
+            append_round_log(data, log_path=log_path)
+        except OSError:
+            # 日志落盘失败时不阻断接口主流程，避免影响实际联调和对打。
+            pass
         return deepcopy(_STATS)
+
+
+def append_round_log(data: dict[str, Any], log_path: str | Path | None = None) -> Path:
+    """把单局 round_end 数据按 JSONL 形式追加写入日志文件。"""
+    target = Path(log_path) if log_path is not None else DEFAULT_ROUND_LOG_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("a", encoding="utf-8") as file:
+        file.write(json.dumps(data, ensure_ascii=False, default=str))
+        file.write("\n")
+    return target
+
+
+def load_round_logs(log_path: str | Path | None = None) -> list[dict[str, Any]]:
+    """从 JSONL 日志文件读取所有对局结果。"""
+    target = Path(log_path) if log_path is not None else DEFAULT_ROUND_LOG_PATH
+    if not target.exists():
+        return []
+    rounds: list[dict[str, Any]] = []
+    for line in target.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        payload = json.loads(line)
+        if not isinstance(payload, dict):
+            raise ValueError("round log line must decode to a JSON object")
+        rounds.append(payload)
+    return rounds
 
 
 def summarize_rounds(rounds: list[dict[str, Any]]) -> dict[str, Any]:

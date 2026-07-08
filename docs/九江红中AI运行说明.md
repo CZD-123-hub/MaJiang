@@ -7,7 +7,7 @@
 - `jiujiang_ai/server.py`：标准库 HTTP 服务，提供 `/get_action` 和 `/round_end`
 - `jiujiang_ai/hu.py`：胡牌判断，支持平胡、红中万能牌、四红中直接胡、可选七对
 - `jiujiang_ai/ting.py`：听牌和真实有效进张判断
-- `jiujiang_ai/stats.py`：单局统计、批量汇总、对打摘要
+- `jiujiang_ai/stats.py`：单局统计、日志落盘、批量汇总、对打摘要
 - `examples/jiujiang_http_debug.py`：本地接口调试脚本
 - `examples/jiujiang_match_report.py`：批量对局结果汇总脚本
 - `tests/`：单元测试和接口回放测试
@@ -111,6 +111,14 @@ python examples\jiujiang_http_debug.py --url http://127.0.0.1:9000/get_action
 }
 ```
 
+同时，`round_end(data)` 默认还会把每局结果追加写入：
+
+```text
+D:\MaJiang\logs\jiujiang_round_end.jsonl
+```
+
+格式是 JSONL，也就是一行一局，后续适合直接做批量统计。
+
 ## 对打结果汇总
 
 如果你已经收集了一批 `/round_end` 的结果，可以把它们整理成一个 JSON 数组文件，然后执行：
@@ -120,9 +128,17 @@ cd D:\MaJiang
 python examples\jiujiang_match_report.py --input rounds.json --our-players 0,2
 ```
 
+如果你直接使用了默认日志落盘，也可以不整理文件，直接读取默认日志：
+
+```powershell
+cd D:\MaJiang
+python examples\jiujiang_match_report.py --use-default-log --our-players 0,2
+```
+
 其中：
 
 - `--input`：局结果数组文件路径
+- `--use-default-log`：直接读取 `logs\jiujiang_round_end.jsonl`
 - `--our-players`：我方座位列表，例如 `0` 或 `0,2`
 
 如果只是先看脚本输出格式，也可以直接跑内置样例：

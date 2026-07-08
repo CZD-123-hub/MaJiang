@@ -1,7 +1,17 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 from jiujiang_ai.api import round_end
-from jiujiang_ai.stats import get_stats, reset_stats, summarize_match_report, summarize_rounds
+from jiujiang_ai.stats import (
+    append_round_log,
+    get_stats,
+    load_round_logs,
+    record_round_end,
+    reset_stats,
+    summarize_match_report,
+    summarize_rounds,
+)
 
 
 class JiujiangStatsTests(unittest.TestCase):
@@ -70,6 +80,29 @@ class JiujiangStatsTests(unittest.TestCase):
         self.assertEqual(report["team"]["dianpao_rounds"], 1)
         self.assertEqual(report["team"]["total_score"], 2.0)
         self.assertAlmostEqual(report["team"]["average_round_score"], 2.0 / 3.0)
+
+    def test_record_round_end_appends_jsonl_log(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "round_end.jsonl"
+
+            stats = record_round_end({"winner": 0, "scores": [3, -1, -1, -1]}, log_path=log_path)
+
+            self.assertEqual(stats["total_rounds"], 1)
+            lines = log_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 1)
+            self.assertIn('"winner": 0', lines[0])
+
+    def test_load_round_logs_reads_jsonl_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "round_end.jsonl"
+            append_round_log({"winner": 0, "scores": [1, -1, 0, 0]}, log_path=log_path)
+            append_round_log({"winner": 2, "scores": [0, -1, 1, 0]}, log_path=log_path)
+
+            rounds = load_round_logs(log_path)
+
+            self.assertEqual(len(rounds), 2)
+            self.assertEqual(rounds[0]["winner"], 0)
+            self.assertEqual(rounds[1]["winner"], 2)
 
 
 if __name__ == "__main__":

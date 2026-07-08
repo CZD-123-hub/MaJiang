@@ -19,6 +19,19 @@ class JiujiangMatchReportTests(unittest.TestCase):
 
         self.assertEqual(loaded, rounds)
 
+    def test_load_rounds_reads_jsonl_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "rounds.jsonl"
+            path.write_text(
+                '{"winner": 0, "scores": [1, -1, 0, 0]}\n{"winner": 2, "scores": [0, -1, 1, 0]}\n',
+                encoding="utf-8",
+            )
+
+            loaded = load_rounds(path)
+
+        self.assertEqual(len(loaded), 2)
+        self.assertEqual(loaded[1]["winner"], 2)
+
     def test_generate_match_report_builds_team_summary(self):
         rounds = [
             {"winner": 0, "scores": [3, -1, -1, -1], "win_type": "zimo"},

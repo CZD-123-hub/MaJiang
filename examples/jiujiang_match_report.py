@@ -9,7 +9,7 @@ from typing import Any
 # 允许脚本在 D:\MaJiang 之外运行时，仍然能导入 jiujiang_ai 包。
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from jiujiang_ai.stats import summarize_match_report
+from jiujiang_ai.stats import DEFAULT_ROUND_LOG_PATH, load_round_logs, summarize_match_report
 
 
 def build_sample_rounds() -> list[dict[str, Any]]:
@@ -22,8 +22,12 @@ def build_sample_rounds() -> list[dict[str, Any]]:
 
 
 def load_rounds(path: str | Path) -> list[dict[str, Any]]:
-    """从 JSON 文件读取一批 round_end 结果，要求文件内容是局结果数组。"""
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    """从 JSON 数组文件或 JSONL 日志文件读取一批 round_end 结果。"""
+    target = Path(path)
+    if target.suffix.lower() == ".jsonl":
+        return load_round_logs(target)
+
+    payload = json.loads(target.read_text(encoding="utf-8"))
     if not isinstance(payload, list):
         raise ValueError("round result file must contain a JSON array")
     return payload
@@ -48,6 +52,11 @@ def main() -> None:
     parser.add_argument("--input", help="包含 round_end 结果数组的 JSON 文件路径")
     parser.add_argument("--our-players", help="我方座位列表，例如 0,2")
     parser.add_argument(
+        "--use-default-log",
+        action="store_true",
+        help="直接读取默认 round_end 日志文件并生成汇总结果",
+    )
+    parser.add_argument(
         "--sample",
         action="store_true",
         help="不读取文件，直接使用脚本内置演示数据生成汇总结果",
@@ -56,10 +65,12 @@ def main() -> None:
 
     if args.sample:
         rounds = build_sample_rounds()
+    elif args.use_default_log:
+        rounds = load_round_logs(DEFAULT_ROUND_LOG_PATH)
     elif args.input:
         rounds = load_rounds(args.input)
     else:
-        raise SystemExit("请提供 --input 或 --sample")
+        raise SystemExit("请提供 --input、--use-default-log 或 --sample")
 
     report = generate_match_report(rounds, our_players=_parse_players(args.our_players))
     print(json.dumps(report, ensure_ascii=False, indent=2))
