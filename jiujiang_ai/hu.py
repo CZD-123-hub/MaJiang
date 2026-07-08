@@ -16,23 +16,43 @@ class HuOptions:
     allow_qidui: bool = False
 
 
-def can_hu(hand: list[int] | tuple[int, ...], options: HuOptions | None = None) -> bool:
+def can_hu(
+    hand: list[int] | tuple[int, ...],
+    options: HuOptions | None = None,
+    fixed_melds: int = 0,
+) -> bool:
     """判断一副手牌在九江红中规则下是否已经胡牌。"""
     validate_hand(hand)
     options = options or HuOptions()
 
-    # 四红中是特殊规则，不要求走普通 3n+2 牌型判断。
+    # 四红中是特殊规则，不要求再满足普通牌型结构。
     if is_four_hongzhong(hand):
         return True
 
-    # 普通平胡和七对都要求完整手牌张数满足 3n+2。
+    return _can_hu_with_fixed_melds(hand, options, fixed_melds)
+
+
+def _can_hu_with_fixed_melds(
+    hand: list[int] | tuple[int, ...],
+    options: HuOptions,
+    fixed_melds: int,
+) -> bool:
+    if fixed_melds < 0 or fixed_melds > 4:
+        return False
+
+    # 固定副露会占掉若干面子，因此剩余手牌张数需要和副露总数一起拼成 14 张。
+    if len(hand) + fixed_melds * 3 != 14:
+        return False
+
+    # 扣除副露后，剩余手牌仍然要满足 3n+2。
     if len(hand) % 3 != 2:
         return False
 
     hongzhong_count = list(hand).count(HONGZHONG)
     ordinary_counts = _counts_tuple(tile for tile in hand if tile != HONGZHONG)
 
-    if options.allow_qidui and _can_qidui(ordinary_counts, hongzhong_count, len(hand)):
+    # 七对只允许在没有副露时成立。
+    if fixed_melds == 0 and options.allow_qidui and _can_qidui(ordinary_counts, hongzhong_count, len(hand)):
         return True
 
     return _can_standard_hu(ordinary_counts, hongzhong_count)
@@ -44,7 +64,7 @@ def _counts_tuple(tiles) -> tuple[int, ...]:
 
 
 def _can_qidui(counts: tuple[int, ...], hongzhong_count: int, hand_size: int) -> bool:
-    # 七对固定 14 张；四张相同牌可按两对处理。
+    # 七对固定 14 张；四张相同的牌可按两对处理。
     if hand_size != 14:
         return False
 
@@ -63,7 +83,7 @@ def _can_qidui(counts: tuple[int, ...], hongzhong_count: int, hand_size: int) ->
 
 
 def _can_standard_hu(counts: tuple[int, ...], hongzhong_count: int) -> bool:
-    # 先枚举将牌，再判断剩余牌能否拆成四组面子。
+    # 先枚举将牌，再判断剩余牌能否拆成若干组面子。
     for pair_counts, remaining_red in _pair_choices(counts, hongzhong_count):
         if _can_form_melds(pair_counts, remaining_red):
             return True
@@ -87,12 +107,12 @@ def _pair_choices(counts: tuple[int, ...], hongzhong_count: int):
 def _can_form_melds(counts: tuple[int, ...], hongzhong_count: int) -> bool:
     index = _first_tile_index(counts)
     if index is None:
-        # 剩余红中可以每三张组成一组万能面子。
+        # 剩余红中可以每三张视作一组万能面子。
         return hongzhong_count % 3 == 0
 
     tile = SUITED_TILE_CODES[index]
 
-    # 分支一：当前最小牌作为刻子，缺几张就用几张红中补。
+    # 先尝试把当前最小牌当刻子，不足部分由红中补齐。
     max_same_tiles = min(3, counts[index])
     for same_tiles in range(1, max_same_tiles + 1):
         red_needed = 3 - same_tiles
@@ -101,7 +121,7 @@ def _can_form_melds(counts: tuple[int, ...], hongzhong_count: int) -> bool:
             if _can_form_melds(new_counts, hongzhong_count - red_needed):
                 return True
 
-    # 分支二：当前牌作为顺子的一部分，红中可以补顺子两侧缺张。
+    # 再尝试把当前牌作为顺子的一部分，顺子里缺的牌允许用红中替代。
     for sequence in _sequences_containing(tile):
         for new_counts, red_needed in _sequence_choices(counts, tile, sequence):
             if red_needed <= hongzhong_count and _can_form_melds(new_counts, hongzhong_count - red_needed):
@@ -137,14 +157,14 @@ def _sequence_choices(counts: tuple[int, ...], current_tile: int, sequence: tupl
         tile_index = _TILE_INDEX[tile]
         for current_counts, red_needed in choices:
             if tile == current_tile:
-                # 当前最小牌必须真实消耗掉，否则递归会卡在同一张牌。
+                # 当前最小牌必须真实消耗掉，避免递归一直卡在同一张牌。
                 if current_counts[tile_index] > 0:
                     next_choices.append((_remove_by_index(current_counts, tile_index, 1), red_needed))
                 continue
 
             if current_counts[tile_index] > 0:
                 next_choices.append((_remove_by_index(current_counts, tile_index, 1), red_needed))
-            # 即使有真实牌，也允许用红中替代，给其它面子保留真实牌。
+            # 即使有真牌，也允许用红中替代，为其他面子保留真牌。
             next_choices.append((current_counts, red_needed + 1))
         choices = next_choices
     return choices

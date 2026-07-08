@@ -1,7 +1,16 @@
 import unittest
 
 from jiujiang_ai.api import get_action, round_end
-from jiujiang_ai.rules import ACTION_DISCARD, ACTION_GANG, ACTION_HU, ACTION_PASS, ACTION_PENG, ACTION_TING
+from jiujiang_ai.rules import (
+    ACTION_ANGANG,
+    ACTION_BUGANG,
+    ACTION_DISCARD,
+    ACTION_GANG,
+    ACTION_HU,
+    ACTION_PASS,
+    ACTION_PENG,
+    ACTION_TING,
+)
 from jiujiang_ai.tiles import HONGZHONG
 
 
@@ -58,6 +67,33 @@ class JiujiangApiTests(unittest.TestCase):
         self.assertEqual(action_type, ACTION_GANG)
         self.assertEqual(action_card, [0x02, 0x02, 0x02, 0x02])
 
+    def test_returns_angang_action_type(self):
+        hand = [0x01, 0x01, 0x01, 0x01, 0x05, 0x06, 0x06, 0x14, 0x21, 0x21, 0x24, 0x25, 0x27, 0x28]
+        data = {
+            "action_cards": {"5": [[0x01, 0x01, 0x01, 0x01]], "0": []},
+            "player_hand_cards": [hand, [], [], []],
+            "acting_do_player_position": 0,
+        }
+
+        action_type, action_card = get_action(data)
+
+        self.assertEqual(action_type, ACTION_ANGANG)
+        self.assertEqual(action_card, [0x01, 0x01, 0x01, 0x01])
+
+    def test_returns_bugang_action_type(self):
+        hand = [0x07, 0x11, 0x12, 0x13, 0x17, 0x18, 0x19, 0x21, 0x21, 0x24, 0x25, 0x26, 0x27, 0x21]
+        data = {
+            "action_cards": {"6": [[0x21, 0x21, 0x21, 0x21]], "0": []},
+            "player_hand_cards": [hand, [], [], []],
+            "acting_do_player_position": 0,
+            "player_peng_cards": [[[0x21, 0x21, 0x21]], [], [], []],
+        }
+
+        action_type, action_card = get_action(data)
+
+        self.assertEqual(action_type, ACTION_BUGANG)
+        self.assertEqual(action_card, [0x21, 0x21, 0x21, 0x21])
+
     def test_skips_angang_when_gang_would_make_hand_worse(self):
         # 这副牌把四张 6 筒直接暗杠后，手里有效结构明显减少，第一版收益判断应选择过牌。
         hand = [0x06, 0x07, 0x11, 0x14, 0x17, 0x25, 0x26, 0x26, 0x26, 0x26, 0x28, 0x29, HONGZHONG, HONGZHONG]
@@ -83,7 +119,7 @@ class JiujiangApiTests(unittest.TestCase):
 
         action_type, action_card = get_action(data)
 
-        self.assertEqual(action_type, ACTION_GANG)
+        self.assertEqual(action_type, ACTION_ANGANG)
         self.assertEqual(action_card, [0x01, 0x01, 0x01, 0x01])
 
     def test_skips_gang_when_current_hand_is_already_ting(self):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Mapping
 
 from .hu import HuOptions, can_hu
 from .tiles import JIUJIANG_TILE_CODES, remaining_tile_counts, validate_hand
@@ -17,32 +18,46 @@ class TingDiscard:
         return sum(self.winning_tiles.values())
 
 
-def winning_tile_counts(hand: list[int] | tuple[int, ...], options: HuOptions | None = None) -> dict[int, int]:
+def winning_tile_counts(
+    hand: list[int] | tuple[int, ...],
+    options: HuOptions | None = None,
+    fixed_melds: int = 0,
+    remaining_counts: Mapping[int, int] | None = None,
+) -> dict[int, int]:
     """返回当前 13 张手牌摸哪些牌可以胡，以及这些牌还剩多少张。"""
     validate_hand(hand)
     options = options or HuOptions()
-    remaining = remaining_tile_counts(hand)
+    remaining = remaining_counts or remaining_tile_counts(hand)
     result: dict[int, int] = {}
 
     for tile in JIUJIANG_TILE_CODES:
-        if remaining[tile] <= 0:
+        if remaining.get(tile, 0) <= 0:
             continue
         # 逐张模拟摸牌，并调用真实胡牌判断，避免只用向听数近似。
-        if can_hu([*hand, tile], options):
-            result[tile] = remaining[tile]
+        if can_hu([*hand, tile], options, fixed_melds=fixed_melds):
+            result[tile] = remaining.get(tile, 0)
 
     return result
 
 
-def is_ting(hand: list[int] | tuple[int, ...], options: HuOptions | None = None) -> bool:
+def is_ting(
+    hand: list[int] | tuple[int, ...],
+    options: HuOptions | None = None,
+    fixed_melds: int = 0,
+    remaining_counts: Mapping[int, int] | None = None,
+) -> bool:
     """判断当前 13 张手牌是否已经听牌。"""
-    return bool(winning_tile_counts(hand, options))
+    return bool(
+        winning_tile_counts(hand, options, fixed_melds=fixed_melds, remaining_counts=remaining_counts)
+    )
 
 
 def ting_discards(
     hand: list[int] | tuple[int, ...],
     candidate_cards: list[list[int]] | None = None,
     options: HuOptions | None = None,
+    fixed_melds: int = 0,
+    remaining_counts: Mapping[int, int] | None = None,
 ) -> dict[int, TingDiscard]:
     """枚举 14 张手牌打出哪些候选牌后可以进入听牌。"""
     validate_hand(hand)
@@ -58,7 +73,12 @@ def ting_discards(
             continue
         after_discard = list(hand)
         after_discard.remove(discard)
-        winning_tiles = winning_tile_counts(after_discard, options)
+        winning_tiles = winning_tile_counts(
+            after_discard,
+            options,
+            fixed_melds=fixed_melds,
+            remaining_counts=remaining_counts,
+        )
         if winning_tiles:
             results[discard] = TingDiscard(discard=discard, winning_tiles=winning_tiles)
 

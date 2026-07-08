@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 
+from .context import remaining_counts_from_data
 from .evaluator import choose_discard, hand_value
 from .hand_split import analyze_hand
 from .hu import HuOptions, can_hu
@@ -22,43 +23,56 @@ from .stats import record_round_end
 from .ting import winning_tile_counts
 from .tiles import JIUJIANG_TILE_SET
 
+
 def get_action(data: dict) -> tuple[int, list[int]]:
     action_cards = normalize_action_cards(data.get("action_cards", {}))
 
-    # 外部裁判已经提示可胡时，胡牌优先级最高。
+    # 外部裁判已经明确给出可胡时，胡牌优先级最高。
     if ACTION_HU in action_cards:
         return ACTION_HU, []
 
     hand = _acting_hand(data)
     hand = _jiujiang_only(hand)
     hu_options = _hu_options(data)
-    # 本地兜底胡牌判断：覆盖平胡、红中万能牌、四红中和可选七对。
-    if hand and can_hu(hand, hu_options):
+    fixed_melds = _fixed_meld_count(data)
+    remaining_counts = remaining_counts_from_data(data, hand) if hand else None
+
+    # 本地兜底胡牌判断要把副露数量一起带上，避免副露后误判不能胡。
+    if hand and can_hu(hand, hu_options, fixed_melds=fixed_melds):
         return ACTION_HU, []
 
-    is_ting = bool(hand and winning_tile_counts(hand, hu_options))
+    is_ting = bool(
+        hand
+        and winning_tile_counts(
+            hand,
+            hu_options,
+            fixed_melds=fixed_melds,
+            remaining_counts=remaining_counts,
+        )
+    )
 
-    # 明杠、暗杠、补杠都按杠牌动作处理，但红中杠会在规则层被过滤。
+    # 杠牌保留原始动作类型：明杠=3、暗杠=5、补杠=6。
     if not is_ting:
         best_gang = _best_gang(action_cards, hand, data)
         if best_gang is not None:
-            return ACTION_GANG, best_gang
+            return best_gang
 
-    # 已经听牌时先不碰，避免改变手牌结构导致失去当前听口。
+    # 已听牌时先不主动碰，尽量保持当前听口。
     best_peng = None if is_ting else _best_peng(action_cards, hand, data)
     if best_peng is not None:
         return ACTION_PENG, best_peng
 
     if ACTION_DISCARD in action_cards and hand:
-        # 出牌评估在原有进攻分基础上，额外参考场上已见弃牌数量，尽量优先打相对安全的牌。
         decision = choose_discard(
             hand,
             _legal_discard_candidates(action_cards[ACTION_DISCARD], hand),
+            fixed_melds=fixed_melds,
             visible_discards=_visible_discard_counts(data),
+            remaining_counts=remaining_counts,
         )
         return ACTION_DISCARD, [decision.discard]
 
-    # 没有更高优先级操作时，若服务端提示可听，则选择听牌。
+    # 没有更高优先级动作时，若服务端提示可听，则选择听牌。
     if ACTION_TING in action_cards:
         return ACTION_TING, []
 
@@ -66,7 +80,7 @@ def get_action(data: dict) -> tuple[int, list[int]]:
 
 
 def round_end(data: dict) -> dict[str, object]:
-    # 对局结束后累计统计结果，方便后续自博弈和与师兄 AI 对打时汇总表现。
+    # 对局结束后累计统计结果，方便后续自博弈和与其他 AI 对打时汇总。
     stats = record_round_end(data)
     return {"status": "ok", "received": True, "data": data, "stats": stats}
 
@@ -81,12 +95,12 @@ def _acting_hand(data: dict) -> list[int]:
 
 
 def _jiujiang_only(cards: list[int]) -> list[int]:
-    # 接口说明里的通用样例可能带有非九江牌；API 层过滤掉，核心规则模块仍保持严格校验。
+    # 输入说明里的通用样例可能带有非九江牌，这里在 API 层先过滤掉。
     return [card for card in cards if card in JIUJIANG_TILE_SET]
 
 
 def _legal_discard_candidates(candidate_cards: list[list[int]], hand: list[int]) -> list[list[int]]:
-    # 弃牌候选也只保留九江合法牌，并且必须在当前过滤后的手牌中。
+    # 只保留九江合法牌，并且必须确实在当前手牌中。
     hand_set = set(hand)
     return [
         cards
@@ -96,7 +110,7 @@ def _legal_discard_candidates(candidate_cards: list[list[int]], hand: list[int])
 
 
 def _hu_options(data: dict) -> HuOptions:
-    # 兼容不同调用方可能使用的房间配置字段名；没有配置时默认不开七对。
+    # 兼容不同调用方使用的房间配置字段名；没有配置时默认不开七对。
     option_sources = [
         data,
         data.get("room_options") or {},
@@ -123,7 +137,8 @@ def _best_peng(action_cards: dict[int, list[list[int]]], hand: list[int], data: 
             continue
         if _is_peng_blocked_by_pass(data, cards[0]):
             continue
-        # 碰牌会消耗手中的两张同牌，这里用模拟后的手牌价值决定是否碰。
+
+        # 碰牌会消耗手中的两张同牌，这里用碰后的手牌价值来决定是否碰。
         simulated = list(hand)
         for tile in cards[:2]:
             if tile in simulated:
@@ -135,19 +150,24 @@ def _best_peng(action_cards: dict[int, list[list[int]]], hand: list[int], data: 
     return best_cards
 
 
-def _best_gang(action_cards: dict[int, list[list[int]]], hand: list[int], data: dict) -> list[int] | None:
+def _best_gang(
+    action_cards: dict[int, list[list[int]]],
+    hand: list[int],
+    data: dict,
+) -> tuple[int, list[int]] | None:
     # 没有手牌上下文时保留旧行为：只要合法就杠，避免接口提示场景直接失效。
     if not hand:
         for gang_action in sorted(GANG_ACTIONS):
             for cards in action_cards.get(gang_action, []):
                 if is_legal_operation(gang_action, cards):
-                    return cards
+                    return gang_action, cards
         return None
 
     fixed_melds = _fixed_meld_count(data)
     before_value = hand_value(hand, fixed_melds=fixed_melds)
     before_analysis = analyze_hand(hand, fixed_melds=fixed_melds)
 
+    best_action: int | None = None
     best_cards: list[int] | None = None
     best_value = float("-inf")
     for gang_action in sorted(GANG_ACTIONS):
@@ -158,19 +178,22 @@ def _best_gang(action_cards: dict[int, list[list[int]]], hand: list[int], data: 
             after_analysis = analyze_hand(after_hand, fixed_melds=after_fixed_melds)
             after_value = hand_value(after_hand, fixed_melds=after_fixed_melds)
 
-            # 第一版收益判断偏保守：杠后向听不能变差；同向听时允许小幅分值波动。
+            # 第一版收益判断保持保守：杠后不能明显退步。
             if after_analysis.shanten > before_analysis.shanten:
                 continue
             if after_analysis.shanten == before_analysis.shanten and after_value + 1.0 < before_value:
                 continue
             if after_value > best_value:
                 best_value = after_value
+                best_action = gang_action
                 best_cards = cards
-    return best_cards
+    if best_action is None or best_cards is None:
+        return None
+    return best_action, best_cards
 
 
 def _fixed_meld_count(data: dict) -> int:
-    # 统计当前玩家已有的副露组数，供杠后手牌评估时一起考虑。
+    # 统计当前玩家已存在的副露组数，供胡牌/听牌/出牌评估统一使用。
     position = int(data.get("acting_do_player_position", 0))
     meld_fields = (
         "player_chi_cards",
@@ -210,8 +233,7 @@ def _simulate_gang_hand(
 
 
 def _visible_discard_counts(data: dict) -> dict[int, int]:
-    # 第一版防守只做最朴素的安全牌统计：场上同一张弃牌出现得越多，默认越相对安全。
-    # 若调用方已经给了 played_cards，就直接信任它；否则回退到 action_seq 里的弃牌历史。
+    # 安全性第一版只统计场上已经出现过几次同牌，出现越多默认越相对安全。
     counts: Counter[int] = Counter()
     played_cards = data.get("played_cards") or []
     if any(played_cards):

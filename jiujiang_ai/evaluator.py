@@ -21,7 +21,9 @@ class DiscardDecision:
 def score_discards(
     hand: list[int],
     candidate_cards: list[list[int]],
+    fixed_melds: int = 0,
     visible_discards: Mapping[int, int] | None = None,
+    remaining_counts: Mapping[int, int] | None = None,
 ) -> dict[int, DiscardDecision]:
     validate_hand(hand)
     visible_discards = visible_discards or {}
@@ -34,10 +36,23 @@ def score_discards(
             continue
         after = list(hand)
         after.remove(discard)
-        analysis = analyze_hand(after)
+        analysis = analyze_hand(after, fixed_melds=fixed_melds)
         # 如果打完后已经听牌，优先使用真实胡牌张数；否则再用向听下降近似有效进张。
-        winning_tiles = winning_tile_counts(after)
-        effective_count = sum(winning_tiles.values()) if winning_tiles else _effective_draw_count(after, analysis.shanten)
+        winning_tiles = winning_tile_counts(
+            after,
+            fixed_melds=fixed_melds,
+            remaining_counts=remaining_counts,
+        )
+        effective_count = (
+            sum(winning_tiles.values())
+            if winning_tiles
+            else _effective_draw_count(
+                after,
+                analysis.shanten,
+                fixed_melds=fixed_melds,
+                remaining_counts=remaining_counts,
+            )
+        )
         score = _score_analysis(analysis, effective_count)
         scores[discard] = DiscardDecision(
             discard=discard,
@@ -53,17 +68,32 @@ def score_discards(
 def choose_discard(
     hand: list[int],
     candidate_cards: list[list[int]],
+    fixed_melds: int = 0,
     visible_discards: Mapping[int, int] | None = None,
+    remaining_counts: Mapping[int, int] | None = None,
 ) -> DiscardDecision:
-    scores = score_discards(hand, candidate_cards, visible_discards=visible_discards)
+    scores = score_discards(
+        hand,
+        candidate_cards,
+        fixed_melds=fixed_melds,
+        visible_discards=visible_discards,
+        remaining_counts=remaining_counts,
+    )
     if not scores:
         raise ValueError("no valid discard candidates")
     return max(scores.values(), key=_discard_sort_key)
 
 
-def hand_value(hand: list[int], fixed_melds: int = 0) -> float:
+def hand_value(
+    hand: list[int],
+    fixed_melds: int = 0,
+    remaining_counts: Mapping[int, int] | None = None,
+) -> float:
     analysis = analyze_hand(hand, fixed_melds=fixed_melds)
-    return _score_analysis(analysis, _effective_draw_count(hand, analysis.shanten, fixed_melds=fixed_melds))
+    return _score_analysis(
+        analysis,
+        _effective_draw_count(hand, analysis.shanten, fixed_melds=fixed_melds, remaining_counts=remaining_counts),
+    )
 
 
 def _discard_sort_key(decision: DiscardDecision) -> tuple:
@@ -91,15 +121,20 @@ def _discard_sort_key(decision: DiscardDecision) -> tuple:
     )
 
 
-def _effective_draw_count(hand: list[int], current_shanten: int, fixed_melds: int = 0) -> int:
-    remaining = remaining_tile_counts(hand)
+def _effective_draw_count(
+    hand: list[int],
+    current_shanten: int,
+    fixed_melds: int = 0,
+    remaining_counts: Mapping[int, int] | None = None,
+) -> int:
+    remaining = remaining_counts or remaining_tile_counts(hand)
     count = 0
     for tile in JIUJIANG_TILE_CODES:
-        if remaining[tile] <= 0:
+        if remaining.get(tile, 0) <= 0:
             continue
         next_hand = sorted([*hand, tile])
         if analyze_hand(next_hand, fixed_melds=fixed_melds).shanten < current_shanten:
-            count += remaining[tile]
+            count += remaining.get(tile, 0)
     return count
 
 
