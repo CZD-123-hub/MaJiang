@@ -3,6 +3,8 @@
 from .api import get_action, round_end
 from .hu import HuOptions, can_hu
 from .round_flow import detect_round_flow, resolve_next_dealer
+from .search_tree import choose_discard as choose_tree_discard
+from .search_tree import expand_discard_tree
 from .settlement import calculate_buy_score, calculate_gang_score, calculate_hu_score, calculate_total_score
 from .stats import (
     DEFAULT_ROUND_LOG_PATH,
@@ -31,8 +33,10 @@ __all__ = [
     "calculate_hu_score",
     "calculate_total_score",
     "calculate_zama_score",
+    "choose_tree_discard",
     "detect_round_flow",
     "detect_win_context",
+    "expand_discard_tree",
     "get_stats",
     "get_action",
     "is_ting",

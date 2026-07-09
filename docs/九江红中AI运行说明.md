@@ -4,7 +4,7 @@
 
 - `jiujiang_ai/`：九江红中麻将 AI 主代码
 - `jiujiang_ai/api.py`：对外决策入口，包含 `get_action(data)` 和 `round_end(data)`
-- `jiujiang_ai/server.py`：标准库 HTTP 服务，提供 `/get_action` 和 `/round_end`
+- `jiujiang_ai/server.py`：Flask HTTP 服务，提供 `/get_action` 和 `/round_end`
 - `jiujiang_ai/hu.py`：胡牌判断，支持平胡、红中万能牌、四红中直接胡、七对开关
 - `jiujiang_ai/ting.py`：听牌和真实有效进张判断
 - `jiujiang_ai/evaluator.py`：弃牌评估与第一版防守逻辑

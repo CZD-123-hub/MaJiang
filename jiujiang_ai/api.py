@@ -6,6 +6,7 @@ from .context import remaining_counts_from_data
 from .evaluator import choose_discard, hand_value
 from .hand_split import analyze_hand
 from .hu import HuOptions, can_hu
+from .search_tree import choose_discard as choose_tree_discard
 from .settlement import calculate_total_score
 from .rules import (
     ACTION_ANGANG,
@@ -69,12 +70,12 @@ def get_action(data: dict) -> tuple[int, list[int]]:
         # 未开启跑红中翻倍时不能出红中；如果候选只剩红中，也不能崩溃。
         if not discard_candidates:
             return ACTION_PASS, []
-        decision = choose_discard(
+        decision = _choose_discard_decision(
             hand,
             discard_candidates,
-            fixed_melds=fixed_melds,
-            visible_discards=_visible_discard_counts(data),
-            remaining_counts=remaining_counts,
+            data,
+            fixed_melds,
+            remaining_counts,
         )
         return ACTION_DISCARD, [decision.discard]
 
@@ -162,6 +163,52 @@ def _truthy(value: object) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on", "y", "是", "开启"}
     return bool(value)
+
+
+def _search_tree_enabled(data: dict) -> bool:
+    # 博弈树先开关式接入，默认保持原启发式路径，便于逐步联调。
+    option_sources = [
+        data,
+        data.get("room_options") or {},
+        data.get("game_options") or {},
+        data.get("options") or {},
+    ]
+    keys = (
+        "search_tree_enabled",
+        "use_search_tree",
+        "enable_search_tree",
+        "use_tree_search",
+        "启用博弈树搜索",
+    )
+    return any(_truthy(source.get(key)) for source in option_sources for key in keys)
+
+
+def _choose_discard_decision(
+    hand: list[int],
+    discard_candidates: list[list[int]],
+    data: dict,
+    fixed_melds: int,
+    remaining_counts: dict[int, int] | None,
+):
+    # 开启搜索树时优先用显式树搜索；树搜索异常时自动回退到旧启发式评估器。
+    visible_discards = _visible_discard_counts(data)
+    if _search_tree_enabled(data):
+        try:
+            return choose_tree_discard(
+                hand,
+                discard_candidates,
+                fixed_melds=fixed_melds,
+                remaining_counts=remaining_counts,
+            )
+        except Exception:
+            pass
+    return choose_discard(
+        hand,
+        discard_candidates,
+        fixed_melds=fixed_melds,
+        visible_discards=visible_discards,
+        remaining_counts=remaining_counts,
+    )
 
 
 def _best_peng(action_cards: dict[int, list[list[int]]], hand: list[int], data: dict) -> list[int] | None:

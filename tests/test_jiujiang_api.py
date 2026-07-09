@@ -1,5 +1,7 @@
 import unittest
+from unittest.mock import patch
 
+import jiujiang_ai.api as api_module
 from jiujiang_ai.api import _legal_discard_candidates, get_action, round_end
 from jiujiang_ai.rules import (
     ACTION_ANGANG,
@@ -243,6 +245,58 @@ class JiujiangApiTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertIn("settlement", result)
         self.assertEqual(result["settlement"]["score_by_player"], [9, -3, -3, -3])
+
+    def test_discard_defaults_to_heuristic_evaluator_when_tree_search_disabled(self):
+        hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x05, 0x08, 0x09]
+        data = {
+            "action_cards": {"7": [[0x01], [0x08]]},
+            "player_hand_cards": [hand, [], [], []],
+            "acting_do_player_position": 0,
+            "room_options": {"search_tree_enabled": False},
+        }
+
+        fake_tree_decision = type("TreeDecision", (), {"discard": 0x01})()
+
+        with patch.object(api_module, "choose_discard", wraps=api_module.choose_discard) as heuristic_mock, patch.object(
+            api_module, "choose_tree_discard", return_value=fake_tree_decision
+        ) as tree_mock:
+            action_type, action_card = get_action(data)
+
+        self.assertEqual(action_type, ACTION_DISCARD)
+        self.assertEqual(action_card, [0x08])
+        heuristic_mock.assert_called_once()
+        tree_mock.assert_not_called()
+
+    def test_discard_uses_tree_search_when_enabled_and_falls_back_on_failure(self):
+        hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x05, 0x08, 0x09]
+        data = {
+            "action_cards": {"7": [[0x01], [0x08]]},
+            "player_hand_cards": [hand, [], [], []],
+            "acting_do_player_position": 0,
+            "room_options": {"search_tree_enabled": True},
+        }
+
+        fake_tree_decision = type("TreeDecision", (), {"discard": 0x01})()
+
+        with patch.object(api_module, "choose_tree_discard", return_value=fake_tree_decision) as tree_mock, patch.object(
+            api_module, "choose_discard", wraps=api_module.choose_discard
+        ) as heuristic_mock:
+            action_type, action_card = get_action(data)
+
+        self.assertEqual(action_type, ACTION_DISCARD)
+        self.assertEqual(action_card, [0x01])
+        tree_mock.assert_called_once()
+        heuristic_mock.assert_not_called()
+
+        with patch.object(api_module, "choose_tree_discard", side_effect=ValueError("tree failed")) as tree_mock, patch.object(
+            api_module, "choose_discard", wraps=api_module.choose_discard
+        ) as heuristic_mock:
+            action_type, action_card = get_action(data)
+
+        self.assertEqual(action_type, ACTION_DISCARD)
+        self.assertEqual(action_card, [0x08])
+        tree_mock.assert_called_once()
+        heuristic_mock.assert_called_once()
 
 
 if __name__ == "__main__":
