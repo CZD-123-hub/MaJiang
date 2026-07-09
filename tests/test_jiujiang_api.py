@@ -230,9 +230,19 @@ class JiujiangApiTests(unittest.TestCase):
         self.assertEqual(action_card, [])
 
     def test_round_end_acknowledges_payload(self):
-        result = round_end({"winner": 0})
+        result = round_end(
+            {
+                "winner": 0,
+                "win_type": "zimo",
+                "player_hand_cards": [[HONGZHONG, 0x11, 0x12], [], [], []],
+                "room_options": {"zama_count": 1},
+                "zama_cards": [0x01],
+            }
+        )
 
         self.assertEqual(result["status"], "ok")
+        self.assertIn("settlement", result)
+        self.assertEqual(result["settlement"]["score_by_player"], [9, -3, -3, -3])
 
 
 if __name__ == "__main__":

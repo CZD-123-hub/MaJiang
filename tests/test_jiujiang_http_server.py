@@ -40,13 +40,24 @@ class JiujiangHttpServerTests(unittest.TestCase):
             self._stop_server(server, thread)
 
     def test_post_round_end_acknowledges_payload(self):
-        # /round_end 当前只做接收确认，后续统计对打结果时再扩展。
+        # /round_end 除了返回 stats，也要把单局结算结果一起返回，方便联调和对打验证。
         server, base_url, thread = self._start_server()
         try:
-            response = self._post_json(f"{base_url}/round_end", {"winner": 0})
+            response = self._post_json(
+                f"{base_url}/round_end",
+                {
+                    "winner": 0,
+                    "win_type": "zimo",
+                    "player_hand_cards": [[1, 17, 18], [], [], []],
+                    "room_options": {"zama_count": 1},
+                    "zama_cards": [1],
+                },
+            )
 
             self.assertEqual(response["status"], "ok")
             self.assertTrue(response["received"])
+            self.assertIn("settlement", response)
+            self.assertEqual(response["settlement"]["score_by_player"], [9, -3, -3, -3])
         finally:
             self._stop_server(server, thread)
 
@@ -76,7 +87,7 @@ class JiujiangHttpServerTests(unittest.TestCase):
         thread.join(timeout=2)
 
     def _post_json(self, url, payload):
-        # 用标准库发 JSON 请求，测试环境不需要额外安装 requests。
+        # 用标准库发 JSON 请求，测试环境里不需要额外安装 requests。
         request = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),

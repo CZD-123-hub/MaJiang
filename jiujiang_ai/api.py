@@ -6,6 +6,7 @@ from .context import remaining_counts_from_data
 from .evaluator import choose_discard, hand_value
 from .hand_split import analyze_hand
 from .hu import HuOptions, can_hu
+from .settlement import calculate_total_score
 from .rules import (
     ACTION_ANGANG,
     ACTION_BUGANG,
@@ -85,13 +86,15 @@ def get_action(data: dict) -> tuple[int, list[int]]:
 
 
 def round_end(data: dict) -> dict[str, object]:
-    # 对局结束后累计统计结果，方便后续自博弈和与其他 AI 对打时汇总。
+    # 对局结束后，除了累计统计，也同步返回这一局的完整结算结果。
     stats = record_round_end(data)
+    settlement = calculate_total_score(data)
     return {
         "status": "ok",
         "received": True,
         "data": data,
         "stats": stats,
+        "settlement": settlement,
         "win_context": detect_win_context(data).to_dict(),
     }
 
