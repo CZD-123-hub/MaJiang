@@ -182,5 +182,113 @@ class JiujiangSearchTreeTests(unittest.TestCase):
         )
 
 
+    def test_follow_up_nodes_expose_component_values(self):
+        hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x05, 0x08, 0x09]
+
+        result = expand_discard_tree(hand, [[0x01]])
+        decision = result.discard_scores[0x01]
+        follow_up_child = next(child for child in decision.children if child.improvement_value > 0)
+        follow_up_node = follow_up_child.follow_up_nodes[0]
+
+        self.assertEqual(
+            follow_up_node.score,
+            follow_up_node.hu_value
+            + follow_up_node.ting_value
+            + follow_up_node.improvement_value
+            + follow_up_node.next_draw_score_bonus,
+        )
+        self.assertGreaterEqual(follow_up_node.hu_value, 0)
+        self.assertGreaterEqual(follow_up_node.ting_value, 0)
+        self.assertGreaterEqual(follow_up_node.improvement_value, 0)
+
+    def test_draw_node_exposes_follow_up_component_aggregates(self):
+        hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x05, 0x08, 0x09]
+
+        result = expand_discard_tree(hand, [[0x01]])
+        decision = result.discard_scores[0x01]
+        follow_up_child = next(child for child in decision.children if child.follow_up_nodes)
+
+        self.assertGreaterEqual(follow_up_child.follow_up_expected_hu_value, 0)
+        self.assertGreaterEqual(follow_up_child.follow_up_expected_ting_value, 0)
+        self.assertGreaterEqual(follow_up_child.follow_up_expected_improvement_value, 0)
+        self.assertGreaterEqual(follow_up_child.follow_up_expected_next_draw_hu_value, 0)
+        self.assertGreaterEqual(follow_up_child.follow_up_expected_next_draw_ting_value, 0)
+        self.assertGreaterEqual(follow_up_child.follow_up_expected_next_draw_improvement_value, 0)
+        self.assertGreaterEqual(follow_up_child.follow_up_expected_next_draw_bonus, 0)
+
+    def test_decision_aggregates_follow_up_component_values(self):
+        hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x05, 0x08, 0x09]
+
+        result = expand_discard_tree(hand, [[0x01], [0x08]])
+        decision = result.discard_scores[0x08]
+
+        self.assertGreaterEqual(decision.expected_follow_up_hu_value, 0)
+        self.assertGreaterEqual(decision.expected_follow_up_ting_value, 0)
+        self.assertGreaterEqual(decision.expected_follow_up_improvement_value, 0)
+        self.assertGreaterEqual(decision.expected_third_draw_hu_value, 0)
+        self.assertGreaterEqual(decision.expected_third_draw_ting_value, 0)
+        self.assertGreaterEqual(decision.expected_third_draw_improvement_value, 0)
+        self.assertGreaterEqual(decision.expected_third_draw_bonus, 0)
+
+    def test_draw_node_exposes_taking_path_record(self):
+        hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x05, 0x08, 0x09]
+
+        result = expand_discard_tree(hand, [[0x01]])
+        decision = result.discard_scores[0x01]
+        child = decision.children[0]
+
+        self.assertEqual(child.path_record.taking_tiles, (child.draw,))
+        self.assertEqual(child.path_record.discard_path, (0x01,))
+        self.assertGreater(child.path_record.path_weight, 0)
+
+    def test_follow_up_nodes_expose_taking_path_record(self):
+        hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x05, 0x08, 0x09]
+
+        result = expand_discard_tree(hand, [[0x01]])
+        decision = result.discard_scores[0x01]
+        follow_up_child = next(child for child in decision.children if child.follow_up_nodes)
+        follow_up_node = follow_up_child.follow_up_nodes[0]
+
+        self.assertEqual(follow_up_node.path_record.taking_tiles, (follow_up_child.draw,))
+        self.assertEqual(
+            follow_up_node.path_record.discard_path,
+            (0x01, follow_up_node.discard),
+        )
+        self.assertGreater(follow_up_node.path_record.path_weight, 0)
+
+    def test_follow_up_nodes_expose_controlled_third_draw_nodes(self):
+        hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x05, 0x08, 0x09]
+
+        result = expand_discard_tree(hand, [[0x01]])
+        decision = result.discard_scores[0x01]
+        follow_up_child = next(child for child in decision.children if child.follow_up_nodes)
+        follow_up_node = follow_up_child.follow_up_nodes[0]
+
+        self.assertLessEqual(len(follow_up_node.next_draw_nodes), 3)
+        self.assertGreaterEqual(follow_up_node.next_draw_expected_hu_value, 0)
+        self.assertGreaterEqual(follow_up_node.next_draw_expected_ting_value, 0)
+        self.assertGreaterEqual(follow_up_node.next_draw_expected_improvement_value, 0)
+
+    def test_third_draw_node_path_record_contains_two_takes(self):
+        hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x05, 0x08, 0x09]
+
+        result = expand_discard_tree(hand, [[0x01]])
+        decision = result.discard_scores[0x01]
+        follow_up_child = next(child for child in decision.children if child.follow_up_nodes)
+        follow_up_node = next(node for node in follow_up_child.follow_up_nodes if node.next_draw_nodes)
+        third_draw_node = follow_up_node.next_draw_nodes[0]
+
+        self.assertEqual(
+            third_draw_node.path_record.taking_tiles,
+            (follow_up_child.draw, third_draw_node.draw),
+        )
+        self.assertEqual(
+            third_draw_node.path_record.discard_path,
+            (0x01, follow_up_node.discard),
+        )
+        self.assertEqual(len(third_draw_node.path_record.taking_weights), 2)
+        self.assertGreater(third_draw_node.path_record.path_weight, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
