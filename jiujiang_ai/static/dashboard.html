@@ -1,0 +1,55 @@
+<main class="app-shell">
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">九江红中麻将 · 实时观察</p>
+      <h1>机器人对局看板</h1>
+    </div>
+    <div class="connection"><span id="connection-dot"></span><span id="connection-text">正在连接日志…</span></div>
+  </header>
+
+  <section class="summary" aria-label="当前对局概要">
+    <div><span>房间</span><strong id="room-id">—</strong></div>
+    <div><span>当前决策</span><strong id="current-player">—</strong></div>
+    <div><span>剩余牌</span><strong id="wall-count">—</strong></div>
+    <div><span>最新动作</span><strong id="latest-action">—</strong></div>
+  </section>
+
+  <section class="table-layout" aria-label="麻将牌桌">
+    <article class="player north" data-seat="2"><h2>座位 2</h2><div class="melds"></div><div class="hand"></div><div class="discards"></div></article>
+    <article class="player west" data-seat="3"><h2>座位 3</h2><div class="melds"></div><div class="hand"></div><div class="discards"></div></article>
+    <div class="table-center"><span>牌池</span><strong id="center-wall">—</strong><small id="turn-hint">等待测试服动作</small></div>
+    <article class="player east" data-seat="1"><h2>座位 1</h2><div class="melds"></div><div class="hand"></div><div class="discards"></div></article>
+    <article class="player south" data-seat="0"><h2>座位 0</h2><div class="melds"></div><div class="hand"></div><div class="discards"></div></article>
+  </section>
+
+  <section class="lower-layout">
+    <article class="panel"><div class="panel-title"><h2>动作时间线</h2><span id="event-count">0 条</span></div><ol id="timeline" class="timeline"></ol></article>
+    <article class="panel"><div class="panel-title"><h2>本次动作统计</h2><span>最近日志</span></div><div id="action-counts" class="action-counts"></div></article>
+  </section>
+</main>
+
+<style>
+  :root { color-scheme:light; --ink:#18324f; --blue:#1677d2; --blue-deep:#0e5fae; --blue-soft:#eaf4ff; --blue-pale:#f6faff; --line:#cfe0f2; --muted:#647b94; --white:#ffffff; --warm:#e49a28; --red:#c83d4b; }
+  * { box-sizing:border-box; } body { margin:0; min-width:320px; color:var(--ink); font-family:"Microsoft YaHei",system-ui,sans-serif; background:linear-gradient(180deg,#e8f4ff 0,#f7fbff 300px,#f2f7fc 100%); }
+  .app-shell { max-width:1320px; margin:0 auto; padding:30px 26px 40px; } .topbar,.summary,.panel-title,.connection { display:flex; align-items:center; justify-content:space-between; gap:16px; } .topbar { padding:0 4px 20px; border-bottom:1px solid rgba(22,119,210,.16); } .eyebrow { color:var(--blue); margin:0 0 5px; font-size:13px; font-weight:600; letter-spacing:.08em; } h1 { margin:0; color:#103c6d; font-size:29px; letter-spacing:.02em; } h2 { margin:0; color:#194b7c; font-size:14px; font-weight:600; } .connection { color:var(--muted); font-size:13px; background:var(--white); padding:9px 12px; border:1px solid var(--line); border-radius:999px; box-shadow:0 4px 14px rgba(29,98,161,.08); } #connection-dot { width:9px; height:9px; border-radius:50%; background:var(--warm); box-shadow:0 0 0 4px rgba(228,154,40,.14); } #connection-dot.ready { background:var(--blue); box-shadow:0 0 0 4px rgba(22,119,210,.14); }
+  .summary { margin:22px 0; display:grid; grid-template-columns:repeat(4,1fr); background:var(--white); border:1px solid var(--line); border-radius:14px; padding:17px 20px; box-shadow:0 10px 26px rgba(35,106,166,.08); } .summary div { display:grid; gap:6px; padding-left:15px; border-left:3px solid #d8eaff; } .summary div:first-child { padding-left:0; border-left:0; } .summary span,.panel-title span { color:var(--muted); font-size:12px; } .summary strong { color:#104a83; font-size:20px; }
+  .table-layout { display:grid; grid-template-columns:1fr 1.25fr 1fr; grid-template-rows:auto 322px auto; gap:14px; align-items:stretch; } .player,.table-center,.panel { background:var(--white); border:1px solid var(--line); border-radius:14px; box-shadow:0 8px 20px rgba(36,103,164,.06); } .player { padding:13px; min-width:0; transition:box-shadow .2s,transform .2s; } .player h2 { display:flex; align-items:center; gap:7px; } .player h2::before { content:""; width:7px; height:7px; border-radius:50%; background:#9bc9f2; } .player.active { border-color:#69abe4; box-shadow:0 0 0 3px rgba(22,119,210,.14),0 10px 24px rgba(36,103,164,.11); transform:translateY(-1px); } .player.active h2::before { background:var(--blue); box-shadow:0 0 0 4px rgba(22,119,210,.12); } .north { grid-column:2; grid-row:1; } .west { grid-column:1; grid-row:2; } .east { grid-column:3; grid-row:2; } .south { grid-column:2; grid-row:3; } .table-center { grid-column:2; grid-row:2; position:relative; display:grid; place-content:center; text-align:center; gap:8px; overflow:hidden; background:radial-gradient(circle at 50% 35%,#f8fcff 0,#ddebfa 100%); border-color:#a9cceb; } .table-center::before,.table-center::after { content:""; position:absolute; width:190px; height:190px; border:1px solid rgba(22,119,210,.13); border-radius:50%; } .table-center::before { top:-82px; left:-82px; } .table-center::after { right:-90px; bottom:-90px; } .table-center span,.table-center small,.table-center strong { position:relative; z-index:1; } .table-center span { color:var(--muted); font-size:13px; letter-spacing:.12em; } .table-center strong { color:var(--blue-deep); font-size:43px; line-height:1; } .table-center small { color:#35658f; max-width:190px; line-height:1.5; }
+  .melds { min-height:25px; margin:9px 0 6px; display:flex; flex-wrap:wrap; gap:4px; } .hand { min-height:48px; display:flex; flex-wrap:wrap; gap:3px; align-content:flex-start; } .discards { min-height:38px; margin-top:10px; padding-top:9px; border-top:1px dashed #c8dbea; display:flex; flex-wrap:wrap; gap:3px; }
+  .tile { width:32px; height:43px; display:grid; place-items:center; background:linear-gradient(145deg,#ffffff,#e8f4ff); color:#1e4e7c; border:1px solid #a8c9e4; border-bottom:3px solid #7facd2; border-radius:5px; box-shadow:0 2px 3px rgba(23,86,141,.12); font-size:12px; font-weight:700; } .tile.red { color:var(--red); } .tile.discard { width:25px; height:31px; font-size:10px; background:#eef6fc; border-bottom-width:2px; box-shadow:none; } .tile.meld { width:27px; height:36px; background:linear-gradient(145deg,#fffdf3,#f7e4a8); border-color:#dfbd68; border-bottom-color:#c4952f; } .empty { color:var(--muted); font-size:12px; }
+  .lower-layout { display:grid; grid-template-columns:2fr 1fr; gap:14px; margin-top:14px; } .panel { padding:16px; min-height:170px; } .panel-title { padding-bottom:11px; border-bottom:1px solid #dfebf6; } .timeline { list-style:none; padding:0; margin:7px 0 0; max-height:286px; overflow:auto; } .timeline li { padding:10px 3px; border-bottom:1px solid #edf3f8; display:grid; grid-template-columns:90px 72px 1fr; gap:10px; font-size:13px; } .timeline time { color:var(--muted); } .action-label { color:var(--blue); font-weight:600; } .action-counts { display:grid; grid-template-columns:repeat(2,1fr); gap:9px; margin-top:14px; } .count-item { background:var(--blue-pale); border:1px solid #dceaf7; padding:11px; border-radius:9px; display:grid; gap:4px; } .count-item span { color:var(--muted); font-size:12px; } .count-item strong { color:var(--blue-deep); font-size:22px; }
+  @media (max-width:760px) { .app-shell{padding:18px 13px 28px}.topbar{align-items:flex-start;flex-direction:column}.summary{grid-template-columns:repeat(2,1fr);gap:16px}.summary div:nth-child(odd){padding-left:0;border-left:0}.table-layout{grid-template-columns:1fr;grid-template-rows:auto}.north,.west,.east,.south,.table-center{grid-column:1;grid-row:auto}.table-center{min-height:156px}.lower-layout{grid-template-columns:1fr}.timeline li{grid-template-columns:70px 60px 1fr}.tile{width:28px;height:38px} }
+</style>
+
+<script>
+  const ACTIONS = {0:'过',2:'碰',3:'明杠',4:'胡',5:'暗杠',6:'补杠',7:'出牌',8:'听'};
+  const COUNTS = [[2,'碰'],[3,'明杠'],[4,'胡'],[5,'暗杠'],[6,'补杠'],[7,'出牌']];
+  const $ = (id) => document.getElementById(id);
+  function tileName(n){ n=Number(n); if(n===53)return '红中'; if(n>=1&&n<=9)return `${n}万`; if(n>=17&&n<=25)return `${n-16}条`; if(n>=33&&n<=41)return `${n-32}筒`; return String(n); }
+  function tiles(cards, cls=''){ if(!cards||!cards.length)return '<span class="empty">—</span>'; return cards.map(c=>`<span class="tile ${Number(c)===53?'red':''} ${cls}">${tileName(c)}</span>`).join(''); }
+  function meldTiles(groups){ if(!groups||!groups.length)return ''; return groups.map(group=>Array.isArray(group)?tiles(group,'meld'):'').join(''); }
+  function renderSeat(seat,state,active){ const root=document.querySelector(`[data-seat="${seat}"]`); if(!root)return; root.classList.toggle('active',Number(active)===seat); const hand=(state.player_hand_cards||[])[seat]||[]; const discard=(state.played_cards||[])[seat]||[]; const melds=['player_peng_cards','player_gang_cards','player_bugang_cards','player_angang_cards'].map(k=>meldTiles((state[k]||[])[seat]||[])).join(''); root.querySelector('.melds').innerHTML=melds||'<span class="empty">副露：无</span>'; root.querySelector('.hand').innerHTML=tiles(hand); root.querySelector('.discards').innerHTML=tiles(discard,'discard'); }
+  function actionText(e){ const p=e.player_position ?? '—'; const a=ACTIONS[e.action_type]||`动作${e.action_type}`; const cards=(e.action_card||[]).map(tileName).join(' '); return `座位 ${p} · ${a}${cards?' · '+cards:''}`; }
+  function render(data){ const latest=data.latest; const dot=$('connection-dot'); dot.classList.add('ready'); $('connection-text').textContent=latest?'实时日志已连接':'等待首个对局动作'; if(!latest)return; const state=latest.table_state||{}; const active=Number(latest.player_position ?? state.acting_do_player_position); $('room-id').textContent=latest.room_id ?? '—'; $('current-player').textContent=Number.isFinite(active)?`座位 ${active}`:'—'; $('wall-count').textContent=state.remain_card_count ?? '—'; $('center-wall').textContent=state.remain_card_count ?? '—'; $('latest-action').textContent=(ACTIONS[latest.action_type]||latest.action_type)+' '+(latest.action_card||[]).map(tileName).join(' '); $('turn-hint').textContent=actionText(latest); [0,1,2,3].forEach(s=>renderSeat(s,state,active)); const events=(data.events||[]).slice(-80).reverse(); $('event-count').textContent=`${data.event_count||0} 条`; $('timeline').innerHTML=events.map(e=>`<li><time>${(e.timestamp||'').slice(11,19)||'—'}</time><span class="action-label">${ACTIONS[e.action_type]||e.action_type}</span><span>${actionText(e)}${e.room_id?' · 房间 '+e.room_id:''}</span></li>`).join(''); const c={}; (data.events||[]).forEach(e=>c[e.action_type]=(c[e.action_type]||0)+1); $('action-counts').innerHTML=COUNTS.map(([code,name])=>`<div class="count-item"><span>${name}</span><strong>${c[code]||0}</strong></div>`).join(''); }
+  async function refresh(){ try{ const response=await fetch('/api/dashboard/events',{cache:'no-store'}); if(!response.ok)throw new Error(); render(await response.json()); }catch{ $('connection-dot').classList.remove('ready'); $('connection-text').textContent='等待服务或动作日志…'; } }
+  refresh(); setInterval(refresh,1000);
+</script>

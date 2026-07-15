@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -11,11 +11,14 @@ from .win_context import detect_win_context
 
 _LOCK = Lock()
 DEFAULT_ROUND_LOG_PATH = Path(__file__).resolve().parents[1] / "logs" / "jiujiang_round_end.jsonl"
+DEFAULT_ACTION_LOG_PATH = Path(__file__).resolve().parents[1] / "logs" / "jiujiang_action.jsonl"
+BEIJING_TIMEZONE = timezone(timedelta(hours=8), name="CST")
 
 
 def _empty_stats() -> dict[str, Any]:
     return {
         "total_rounds": 0,
+        "draw_count": 0,
         "win_count": 0,
         "self_draw_count": 0,
         "discard_win_count": 0,
@@ -30,12 +33,14 @@ def _empty_stats() -> dict[str, Any]:
 
 
 _STATS = _empty_stats()
+_RECORDED_ROOM_IDS: set[int | str] = set()
 
 
 def reset_stats() -> None:
     """清空累计对局统计，主要用于本地测试和重新开始一轮评测。"""
     with _LOCK:
         _reset_stats_dict(_STATS)
+        _RECORDED_ROOM_IDS.clear()
 
 
 def get_stats() -> dict[str, Any]:
@@ -47,10 +52,12 @@ def get_stats() -> dict[str, Any]:
 def record_round_end(data: dict[str, Any], log_path: str | Path | None = None) -> dict[str, Any]:
     """记录一局结束数据，更新内存统计并追加写入本地日志。"""
     with _LOCK:
-        _accumulate_round(_STATS, data)
+        duplicate = _is_duplicate_room_end(data)
+        if not duplicate:
+            _accumulate_round(_STATS, data)
         stats_snapshot = deepcopy(_STATS)
         try:
-            append_round_log(data, stats_snapshot, log_path=log_path)
+            append_round_log(data, stats_snapshot, log_path=log_path, duplicate=duplicate)
         except OSError:
             # 日志落盘失败时不阻断接口主流程，避免影响联调和对打。
             pass
@@ -61,19 +68,67 @@ def append_round_log(
     data: dict[str, Any],
     stats: dict[str, Any] | None = None,
     log_path: str | Path | None = None,
+    duplicate: bool = False,
 ) -> Path:
     """把单局 round_end 数据按 JSONL 形式追加写入日志文件。"""
     target = Path(log_path) if log_path is not None else DEFAULT_ROUND_LOG_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(BEIJING_TIMEZONE).isoformat(),
         "data": data,
         "stats": stats or {},
+        "duplicate": duplicate,
     }
     with target.open("a", encoding="utf-8") as file:
         file.write(json.dumps(payload, ensure_ascii=False, default=str))
         file.write("\n")
     return target
+
+
+def append_action_log(
+    data: dict[str, Any],
+    *,
+    action_type: int,
+    action_card: list[int],
+    client: str | None = None,
+    log_path: str | Path | None = None,
+) -> Path:
+    """追加一条 /get_action 的实际决策，供远程对局报告精确统计碰杠胡。"""
+    target = Path(log_path) if log_path is not None else DEFAULT_ACTION_LOG_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    position = data.get("acting_do_player_position", data.get("acting_player_position"))
+    payload = {
+        "timestamp": datetime.now(BEIJING_TIMEZONE).isoformat(),
+        "room_id": data.get("room_id"),
+        "player_position": position,
+        "action_type": action_type,
+        "action_card": list(action_card),
+        "client": client,
+        "table_state": _action_table_state(data),
+    }
+    with target.open("a", encoding="utf-8") as file:
+        file.write(json.dumps(payload, ensure_ascii=False, default=str))
+        file.write("\n")
+    return target
+
+
+def _action_table_state(data: dict[str, Any]) -> dict[str, Any]:
+    """保留观察牌局所需的最小桌面快照，不影响决策逻辑。"""
+    fields = (
+        "player_hand_cards",
+        "played_cards",
+        "player_chi_cards",
+        "player_peng_cards",
+        "player_gang_cards",
+        "player_bugang_cards",
+        "player_angang_cards",
+        "last_action",
+    )
+    state = {field: data.get(field) or [] for field in fields}
+    state["acting_player_position"] = data.get("acting_player_position")
+    state["acting_do_player_position"] = data.get("acting_do_player_position")
+    state["remain_card_count"] = len(data.get("remain_card_stack") or [])
+    return state
 
 
 def load_round_logs(log_path: str | Path | None = None) -> list[dict[str, Any]]:
@@ -128,6 +183,9 @@ def _accumulate_round(stats: dict[str, Any], data: dict[str, Any]) -> None:
     stats["total_rounds"] += 1
     context = detect_win_context(data)
     winners = context.winners
+
+    if _is_draw(data, winners):
+        stats["draw_count"] += 1
 
     if winners:
         stats["win_count"] += len(winners)
@@ -205,6 +263,28 @@ def _summarize_team(
 def _is_self_draw(win_type: str) -> bool:
     # 杠开本质上也属于摸牌成胡，因此先并入自摸类统计。
     return win_type in {"zimo", "gangkai"}
+
+
+def _is_draw(data: dict[str, Any], winners: list[int | str]) -> bool:
+    """平台 end_type=2 或没有赢家且全员零分时，均按流局统计。"""
+    if data.get("end_type") == 2:
+        return True
+    return bool(data.get("is_draw")) or (not winners and bool(data.get("liu_ju_score")))
+
+
+def _is_duplicate_room_end(data: dict[str, Any]) -> bool:
+    """测试服会对同一 room_id 重复回调；无 room_id 的本地调用仍逐条计数。"""
+    room_id = data.get("room_id")
+    if room_id is None:
+        return False
+    try:
+        key: int | str = int(room_id)
+    except (TypeError, ValueError):
+        key = str(room_id)
+    if key in _RECORDED_ROOM_IDS:
+        return True
+    _RECORDED_ROOM_IDS.add(key)
+    return False
 
 
 def _extract_scores(data: dict[str, Any]) -> dict[str, float]:

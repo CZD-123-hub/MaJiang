@@ -107,6 +107,7 @@ class JiujiangStatsTests(unittest.TestCase):
             self.assertEqual(len(lines), 1)
             payload = json.loads(lines[0])
             self.assertIn("timestamp", payload)
+            self.assertTrue(payload["timestamp"].endswith("+08:00"))
             self.assertEqual(payload["data"]["winner"], 0)
             self.assertEqual(payload["stats"]["total_rounds"], 1)
 

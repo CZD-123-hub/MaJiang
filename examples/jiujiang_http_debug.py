@@ -52,7 +52,7 @@ def build_sample_data() -> dict[str, Any]:
     }
 
 
-def post_get_action(url: str, data: dict[str, Any]) -> list[Any]:
+def post_get_action(url: str, data: dict[str, Any]) -> dict[str, Any]:
     """向 /get_action 发送一份局面数据，并返回 [action_type, action_card]。"""
     request = urllib.request.Request(
         url,

@@ -289,6 +289,40 @@ class JiujiangSearchTreeTests(unittest.TestCase):
         self.assertEqual(len(third_draw_node.path_record.taking_weights), 2)
         self.assertGreater(third_draw_node.path_record.path_weight, 0)
 
+    def test_multi_route_tree_exposes_retained_routes_on_each_level(self):
+        hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x05, 0x08, 0x09]
+
+        result = expand_discard_tree(
+            hand,
+            [[0x01]],
+            use_multi_route=True,
+            decision_data={"player_hand_cards": [hand, [], [], []]},
+            acting_position=0,
+        )
+        decision = result.discard_scores[0x01]
+        child = next(node for node in decision.children if node.follow_up_nodes)
+        follow_up = child.follow_up_nodes[0]
+
+        self.assertGreater(decision.route_summary.route_count, 0)
+        self.assertGreater(decision.route_summary.retained_route_count, 0)
+        self.assertGreaterEqual(decision.route_summary.expected_win_value, 0)
+        self.assertGreater(child.route_summary.route_count, 0)
+        self.assertGreater(follow_up.route_summary.route_count, 0)
+
+    def test_multi_route_tree_adds_route_value_to_root_score_only_when_enabled(self):
+        hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x05, 0x08, 0x09]
+
+        plain = expand_discard_tree(hand, [[0x01]])
+        enhanced = expand_discard_tree(
+            hand,
+            [[0x01]],
+            use_multi_route=True,
+            decision_data={"player_hand_cards": [hand, [], [], []]},
+            acting_position=0,
+        )
+
+        self.assertGreater(enhanced.discard_scores[0x01].score, plain.discard_scores[0x01].score)
+
 
 if __name__ == "__main__":
     unittest.main()

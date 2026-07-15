@@ -94,7 +94,7 @@ def recommend_op(op_card, cards=[], suits=[], king_card=None, discards=[], disca
     :param isHu: 是否胡牌
     :return: [],isHu 动作组合牌，是否胡牌
     """
-    if isHu:
+    if isHu:              # 胡牌就直接返回
         return [], True
 
     # 更新全局变量
@@ -122,7 +122,7 @@ def recommend_op(op_card, cards=[], suits=[], king_card=None, discards=[], disca
     # 计算操作前评估值 ？那这个时候手牌是13还是14张牌，对于评估值的计算有影响吗，还是说padding补齐了缺的那张牌？
     cards_pre = copy.copy(cards)
     # cards_pre.append(-1) #加入一张0作为下次摸到的牌，并提升一定的概率a
-    # 计算各牌型的评估值和本轮的最小向听数
+    # 计算各牌型的评估值和本轮的最小向听数，这里为操作前的评分
     score_dict_pre, min_xts_pre = get_score_dict(cards_pre, suits, king_card, fei_king, padding=[-1])
     # xts_pre = min
     if score_dict_pre != {}:
@@ -174,7 +174,7 @@ def recommend_op(op_card, cards=[], suits=[], king_card=None, discards=[], disca
 
             suits_ = MJ.deepcopy(suits)
             suits_.append(sorted(op_set + [op_card]))  # 进行操作,把新组合加入副露
-            # 操作完后计算评估值
+            # 操作完后计算评估值，操作后的评分
             score_dict, _ = get_score_dict(cards=cards_, suits=suits_, king_card=king_card, fei_king=fei_king,
                                            max_xts=min_xts_pre)  # max_xts用于限制操作完后向听数增加的情况
             # max_discard = max(score_dict, key=lambda x: score_dict[x])

@@ -27,6 +27,24 @@ class JiujiangStatsWinContextTests(unittest.TestCase):
         self.assertEqual(result["win_context"]["dianpao_player"], 1)
         self.assertFalse(result["win_context"]["is_multi_win"])
 
+    def test_round_end_normalizes_platform_result_fields(self):
+        result = round_end(
+            {
+                "win_player_position": 3,
+                "banker_position": 2,
+                "dp_player_position": 3,
+                "total_score": [-2, -2, -2, 6],
+                "end_type": 1,
+            }
+        )
+
+        self.assertEqual(result["data"]["winner"], 3)
+        self.assertEqual(result["data"]["dealer"], 2)
+        self.assertEqual(result["data"]["scores"], [-2, -2, -2, 6])
+        self.assertEqual(result["win_context"]["win_type"], "zimo")
+        self.assertEqual(result["stats"]["wins_by_player"], {"3": 1})
+        self.assertEqual(result["stats"]["total_score_by_player"], {"0": -2.0, "1": -2.0, "2": -2.0, "3": 6.0})
+
     def test_multi_win_team_summary_counts_shared_discard_round(self):
         round_end({"winners": [0, 2], "dianpao_player": 1, "scores": [2, -4, 2, 0]})
 

@@ -9,7 +9,7 @@ from jiujiang_ai.server import create_server
 
 
 class JiujiangHttpServerTests(unittest.TestCase):
-    def test_post_get_action_returns_json_action_pair(self):
+    def test_post_get_action_returns_named_action_fields(self):
         # /get_action 需要按接口文档返回 [action_type, action_card]。
         server, base_url, thread = self._start_server()
         try:
@@ -22,7 +22,7 @@ class JiujiangHttpServerTests(unittest.TestCase):
                 },
             )
 
-            self.assertEqual(response, [ACTION_HU, []])
+            self.assertEqual(response, {"action_card": [], "action_type": ACTION_HU})
         finally:
             self._stop_server(server, thread)
 
@@ -35,7 +35,20 @@ class JiujiangHttpServerTests(unittest.TestCase):
                 {"data": {"action_cards": {"4": []}}},
             )
 
-            self.assertEqual(response, [ACTION_HU, []])
+            self.assertEqual(response, {"action_card": [], "action_type": ACTION_HU})
+        finally:
+            self._stop_server(server, thread)
+
+    def test_get_action_logs_request_and_decision_summary(self):
+        server, base_url, thread = self._start_server()
+        try:
+            with self.assertLogs("jiujiang_ai.http", level="INFO") as captured:
+                self._post_json(f"{base_url}/get_action", {"action_cards": {"4": []}})
+
+            output = "\n".join(captured.output)
+            self.assertIn("get_action request", output)
+            self.assertIn("player_id=0", output)
+            self.assertIn("get_action response", output)
         finally:
             self._stop_server(server, thread)
 

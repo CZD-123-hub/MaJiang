@@ -1,8 +1,11 @@
 import unittest
 from unittest.mock import patch
+from pathlib import Path
+import tempfile
 
 import jiujiang_ai.api as api_module
 from jiujiang_ai.api import _legal_discard_candidates, get_action, round_end
+from jiujiang_ai.decision_log import load_decision_logs
 from jiujiang_ai.rules import (
     ACTION_ANGANG,
     ACTION_BUGANG,
@@ -297,6 +300,69 @@ class JiujiangApiTests(unittest.TestCase):
         self.assertEqual(action_card, [0x08])
         tree_mock.assert_called_once()
         heuristic_mock.assert_called_once()
+
+    def test_discard_uses_multi_route_engine_when_enabled(self):
+        hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x05, 0x08, 0x09]
+        data = {
+            "action_cards": {"7": [[0x01], [0x08]]},
+            "player_hand_cards": [hand, [], [], []],
+            "acting_do_player_position": 0,
+            "room_options": {"multi_route_enabled": True},
+        }
+        fake_decision = type("MultiRouteDecision", (), {"discard": 0x01})()
+
+        with patch.object(api_module, "choose_multi_route_discard", return_value=fake_decision) as multi_route_mock, patch.object(
+            api_module, "choose_discard", wraps=api_module.choose_discard
+        ) as heuristic_mock, patch.object(api_module, "choose_tree_discard") as tree_mock:
+            action_type, action_card = get_action(data)
+
+        self.assertEqual(action_type, ACTION_DISCARD)
+        self.assertEqual(action_card, [0x01])
+        multi_route_mock.assert_called_once()
+        heuristic_mock.assert_not_called()
+        tree_mock.assert_not_called()
+
+    def test_discard_uses_multi_route_tree_when_enabled(self):
+        hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x05, 0x08, 0x09]
+        data = {
+            "action_cards": {"7": [[0x01], [0x08]]},
+            "player_hand_cards": [hand, [], [], []],
+            "acting_do_player_position": 0,
+            "room_options": {"multi_route_tree_enabled": True},
+        }
+        fake_decision = type("TreeDecision", (), {"discard": 0x08})()
+
+        with patch.object(api_module, "choose_tree_discard", return_value=fake_decision) as tree_mock, patch.object(
+            api_module, "choose_multi_route_discard"
+        ) as multi_route_mock:
+            action_type, action_card = get_action(data)
+
+        self.assertEqual(action_type, ACTION_DISCARD)
+        self.assertEqual(action_card, [0x08])
+        tree_mock.assert_called_once()
+        self.assertTrue(tree_mock.call_args.kwargs["use_multi_route"])
+        self.assertIs(tree_mock.call_args.kwargs["decision_data"], data)
+        multi_route_mock.assert_not_called()
+
+    def test_discard_logs_summary_only_when_enabled(self):
+        hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x05, 0x08, 0x09]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "decisions.jsonl"
+            data = {
+                "room_id": 7,
+                "action_cards": {"7": [[0x01], [0x08]]},
+                "player_hand_cards": [hand, [], [], []],
+                "acting_do_player_position": 0,
+                "room_options": {"decision_log_enabled": True, "decision_log_path": str(log_path)},
+            }
+
+            action_type, action_card = get_action(data)
+            records = load_decision_logs(log_path)
+
+        self.assertEqual(action_type, ACTION_DISCARD)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["action_card"], action_card)
+        self.assertEqual(records[0]["context"]["room_id"], 7)
 
 
 if __name__ == "__main__":

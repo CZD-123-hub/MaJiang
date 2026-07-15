@@ -28,8 +28,8 @@ class JiujiangDebugScriptTests(unittest.TestCase):
         try:
             result = module.post_get_action(f"http://{host}:{port}/get_action", module.build_sample_data())
 
-            self.assertEqual(result[0], ACTION_DISCARD)
-            self.assertIn(result[1], module.build_sample_data()["action_cards"]["7"])
+            self.assertEqual(result["action_type"], ACTION_DISCARD)
+            self.assertIn(result["action_card"], module.build_sample_data()["action_cards"]["7"])
         finally:
             server.shutdown()
             server.server_close()

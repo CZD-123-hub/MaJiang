@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import Counter
 
 from .context import remaining_counts_from_data
+from .decision_engine import choose_discard as choose_multi_route_discard
+from .decision_log import append_decision_log
 from .evaluator import choose_discard, hand_value
 from .hand_split import analyze_hand
 from .hu import HuOptions, can_hu
@@ -77,7 +79,9 @@ def get_action(data: dict) -> tuple[int, list[int]]:
             fixed_melds,
             remaining_counts,
         )
-        return ACTION_DISCARD, [decision.discard]
+        result = [decision.discard]
+        _record_discard_decision(data, decision, result)
+        return ACTION_DISCARD, result
 
     # 没有更高优先级动作时，若服务端提示可听，则选择听牌。
     if ACTION_TING in action_cards:
@@ -88,16 +92,65 @@ def get_action(data: dict) -> tuple[int, list[int]]:
 
 def round_end(data: dict) -> dict[str, object]:
     # 对局结束后，除了累计统计，也同步返回这一局的完整结算结果。
-    stats = record_round_end(data)
-    settlement = calculate_total_score(data)
+    normalized_data = _normalize_round_end_data(data)
+    stats = record_round_end(normalized_data)
+    settlement = calculate_total_score(normalized_data)
     return {
         "status": "ok",
         "received": True,
-        "data": data,
+        "data": normalized_data,
         "stats": stats,
         "settlement": settlement,
-        "win_context": detect_win_context(data).to_dict(),
+        "win_context": detect_win_context(normalized_data).to_dict(),
     }
+
+
+def _normalize_round_end_data(data: dict) -> dict:
+    """兼容对战平台的结算字段名，统一为项目内部统计口径。"""
+    normalized = dict(data)
+    aliases = (
+        ("dealer", "banker_position"),
+        ("scores", "total_score"),
+    )
+    for target, source in aliases:
+        if normalized.get(target) is None and data.get(source) is not None:
+            normalized[target] = data[source]
+
+    platform_winner = data.get("win_player_position")
+    is_draw = data.get("end_type") == 2 or (
+        platform_winner is not None and not _valid_player_position(platform_winner)
+    )
+    if is_draw:
+        # -1 是测试服的流局哨兵值，不能当作赢家或自摸。
+        normalized.pop("winner", None)
+        normalized.pop("dianpao_player", None)
+        normalized.pop("win_type", None)
+        normalized["is_draw"] = True
+        return normalized
+
+    if normalized.get("winner") is None and _valid_player_position(platform_winner):
+        normalized["winner"] = platform_winner
+
+    winner = normalized.get("winner")
+    platform_dianpao = data.get("dp_player_position")
+    if (
+        normalized.get("dianpao_player") is None
+        and _valid_player_position(platform_dianpao)
+        and platform_dianpao != winner
+    ):
+        normalized["dianpao_player"] = platform_dianpao
+
+    if normalized.get("win_type") is None and winner is not None:
+        # 平台将自摸时的 dp_player_position 置为赢家本人；点炮时则为另一座位。
+        normalized["win_type"] = "dianpao" if normalized.get("dianpao_player") is not None else "zimo"
+    return normalized
+
+
+def _valid_player_position(value: object) -> bool:
+    try:
+        return 0 <= int(value) <= 3
+    except (TypeError, ValueError):
+        return False
 
 
 def _acting_hand(data: dict) -> list[int]:
@@ -183,6 +236,94 @@ def _search_tree_enabled(data: dict) -> bool:
     return any(_truthy(source.get(key)) for source in option_sources for key in keys)
 
 
+def _multi_route_enabled(data: dict) -> bool:
+    """多拆分综合评分开关，默认关闭以便与既有策略做回放对照。"""
+    option_sources = [
+        data,
+        data.get("room_options") or {},
+        data.get("game_options") or {},
+        data.get("options") or {},
+    ]
+    keys = (
+        "multi_route_enabled",
+        "use_multi_route",
+        "enable_multi_route",
+        "use_composite_decision",
+        "启用多路线决策",
+    )
+    return any(_truthy(source.get(key)) for source in option_sources for key in keys)
+
+
+def _multi_route_tree_enabled(data: dict) -> bool:
+    """多路线搜索树开关；它比单层多路线评分更慢，单独灰度启用。"""
+    option_sources = [
+        data,
+        data.get("room_options") or {},
+        data.get("game_options") or {},
+        data.get("options") or {},
+    ]
+    keys = (
+        "multi_route_tree_enabled",
+        "use_multi_route_tree",
+        "enable_multi_route_tree",
+        "启用多路线搜索树",
+    )
+    return any(_truthy(source.get(key)) for source in option_sources for key in keys)
+
+
+def _decision_logging_enabled(data: dict) -> bool:
+    option_sources = [
+        data,
+        data.get("room_options") or {},
+        data.get("game_options") or {},
+        data.get("options") or {},
+        data.get("strategy_options") or {},
+    ]
+    keys = ("decision_log_enabled", "enable_decision_log", "记录决策日志")
+    return any(_truthy(source.get(key)) for source in option_sources for key in keys)
+
+
+def _decision_log_path(data: dict) -> str | None:
+    for source in (
+        data,
+        data.get("room_options") or {},
+        data.get("game_options") or {},
+        data.get("options") or {},
+        data.get("strategy_options") or {},
+    ):
+        value = source.get("decision_log_path")
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def _strategy_name(data: dict) -> str:
+    if _multi_route_tree_enabled(data):
+        return "multi_route_tree"
+    if _multi_route_enabled(data):
+        return "multi_route"
+    if _search_tree_enabled(data):
+        return "search_tree"
+    return "heuristic"
+
+
+def _record_discard_decision(data: dict, decision: object, action_card: list[int]) -> None:
+    if not _decision_logging_enabled(data):
+        return
+    try:
+        append_decision_log(
+            data,
+            action_type=ACTION_DISCARD,
+            action_card=action_card,
+            strategy=_strategy_name(data),
+            decision=decision,
+            log_path=_decision_log_path(data),
+        )
+    except OSError:
+        # 回放日志属于观测能力，不能因磁盘问题影响对局动作。
+        pass
+
+
 def _choose_discard_decision(
     hand: list[int],
     discard_candidates: list[list[int]],
@@ -192,6 +333,32 @@ def _choose_discard_decision(
 ):
     # 开启搜索树时优先用显式树搜索；树搜索异常时自动回退到旧启发式评估器。
     visible_discards = _visible_discard_counts(data)
+    if _multi_route_tree_enabled(data):
+        try:
+            return choose_tree_discard(
+                hand,
+                discard_candidates,
+                fixed_melds=fixed_melds,
+                remaining_counts=remaining_counts,
+                use_multi_route=True,
+                decision_data=data,
+                acting_position=int(data.get("acting_do_player_position", 0)),
+            )
+        except Exception:
+            pass
+    if _multi_route_enabled(data):
+        try:
+            return choose_multi_route_discard(
+                hand,
+                discard_candidates,
+                data=data,
+                acting_position=int(data.get("acting_do_player_position", 0)),
+                fixed_melds=fixed_melds,
+                remaining_counts=remaining_counts,
+            )
+        except Exception:
+            # 灰度期保证接口稳定；后续接入结构化日志后再收紧异常边界。
+            pass
     if _search_tree_enabled(data):
         try:
             return choose_tree_discard(

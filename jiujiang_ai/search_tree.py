@@ -3,10 +3,54 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Mapping
 
-from .hand_split import analyze_hand
+from .expected_value import estimate_win_value
+from .hand_split import HandAnalysis, analyze_hand
+from .hand_routes import HandRoute, enumerate_hand_routes
 from .hu import HuOptions, can_hu
+from .route_metrics import RouteMetrics, measure_routes, retain_routes
 from .tiles import JIUJIANG_TILE_CODES, remaining_tile_counts, validate_hand
 from .ting import ting_discards, winning_tile_counts
+
+
+@dataclass(frozen=True)
+class CombinationSummary:
+    """组合状态摘要：体现当前手牌的组合驱动信息，向 v5 的组合状态树靠近。
+
+    该摘要直接来自 analyze_hand 的结果，把“纯评估型节点”里隐含的组合信息
+    显式挂到树节点上，方便后续做组合驱动的递归扩展。字段含义：
+    - melds: 已成面子数（含固定副露，上限 4）
+    - pairs: 将牌对子数（0/1，红中充当将牌时也算 1）
+    - taatsu: 搭子数（两面/边张/嵌张等未完成面子）
+    - leftovers: 孤张数（无法归入面子/将/搭的单张）
+    - hongzhong_count: 当前手牌里的红中总数
+    - hongzhong_used: 已被用于充当面子/将牌的红中数
+    - shanten: 向听数（0 即听牌）
+    """
+
+    melds: int
+    pairs: int
+    taatsu: int
+    leftovers: int
+    hongzhong_count: int
+    hongzhong_used: int
+    shanten: int
+
+
+@dataclass(frozen=True)
+class RouteSummary:
+    """多候选拆分在一个树节点上的保留结果与综合路线价值。"""
+
+    route_count: int
+    retained_route_count: int
+    effective_count: int
+    flexibility: float
+    progress_probability: float
+    expected_win_value: float
+    route_value: float
+    retained_routes: tuple[HandRoute, ...]
+
+
+_EMPTY_ROUTE_SUMMARY = RouteSummary(0, 0, 0, 0.0, 0.0, 0.0, 0.0, ())
 
 
 @dataclass(frozen=True)
@@ -50,6 +94,9 @@ class DrawNode:
     follow_up_expected_next_draw_bonus: float
     follow_up_score_bonus: float
     path_value: float
+    # 组合状态摘要：摸到该张牌后手牌的组合驱动信息，向 v5 靠近
+    combination: CombinationSummary
+    route_summary: RouteSummary
 
 
 @dataclass(frozen=True)
@@ -79,6 +126,7 @@ class DiscardDecision:
     improving_child_count: int
     ting_child_count: int
     children: tuple[DrawNode, ...]
+    route_summary: RouteSummary
 
 
 @dataclass(frozen=True)
@@ -99,6 +147,9 @@ class FollowUpNode:
     next_draw_expected_improvement_value: float
     next_draw_score_bonus: float
     score: float
+    # 组合状态摘要：弃掉该张牌后手牌的组合驱动信息，向 v5 靠近
+    combination: CombinationSummary
+    route_summary: RouteSummary
 
 
 @dataclass(frozen=True)
@@ -114,6 +165,9 @@ class ThirdDrawNode:
     improvement_value: float
     path_record: TakingPath
     score: float
+    # 组合状态摘要：第三层再摸牌后手牌的组合驱动信息，向 v5 靠近
+    combination: CombinationSummary
+    route_summary: RouteSummary
 
 
 @dataclass(frozen=True)
@@ -125,6 +179,69 @@ class SearchTreeResult:
     node_count: int
 
 
+def _combination_from_analysis(analysis: HandAnalysis) -> CombinationSummary:
+    """把 analyze_hand 的结果转成组合状态摘要，供树节点挂载使用。
+
+    这是当前树从“纯评估型节点”往“组合驱动型节点”过渡的最小桥梁：
+    直接复用 hand_split 的拆分结果，不重新做组合枚举，避免破坏现有评估链路。
+    """
+    return CombinationSummary(
+        melds=analysis.melds,
+        pairs=analysis.pairs,
+        taatsu=analysis.taatsu,
+        leftovers=analysis.leftovers,
+        hongzhong_count=analysis.hongzhong_count,
+        hongzhong_used=analysis.hongzhong_used,
+        shanten=analysis.shanten,
+    )
+
+
+def _summarize_routes(
+    hand: list[int],
+    *,
+    fixed_melds: int,
+    remaining_counts: Mapping[int, int],
+    decision_data: dict | None,
+    acting_position: int,
+    pending_discard: int | None = None,
+) -> RouteSummary:
+    """为树节点计算多拆分保留、进张概率和可比较的路线收益。"""
+    routes = enumerate_hand_routes(hand, fixed_melds=fixed_melds)
+    metrics = measure_routes(hand, routes, remaining_counts)
+    retained = retain_routes(routes, metrics)
+    effective_tiles = _combined_route_effective_tiles(retained, metrics)
+    wall_total = sum(max(0, count) for count in remaining_counts.values())
+    progress_probability = sum(effective_tiles.values()) / wall_total if wall_total else 0.0
+    flexibility = max((metrics[route.signature].flexibility for route in retained), default=0.0)
+    expected_win_value = estimate_win_value(
+        decision_data or {},
+        winner=acting_position,
+        pending_discard=pending_discard,
+    ).total
+    route_value = progress_probability * expected_win_value + 0.30 * min(1.0, flexibility / 8.0)
+    return RouteSummary(
+        route_count=len(routes),
+        retained_route_count=len(retained),
+        effective_count=sum(effective_tiles.values()),
+        flexibility=flexibility,
+        progress_probability=progress_probability,
+        expected_win_value=expected_win_value,
+        route_value=route_value,
+        retained_routes=retained,
+    )
+
+
+def _combined_route_effective_tiles(
+    routes: tuple[HandRoute, ...],
+    metrics_by_signature: Mapping[tuple[object, ...], RouteMetrics],
+) -> dict[int, int]:
+    combined: dict[int, int] = {}
+    for route in routes:
+        for tile, count in metrics_by_signature[route.signature].effective_tiles.items():
+            combined[tile] = max(combined.get(tile, 0), count)
+    return combined
+
+
 def expand_discard_tree(
     hand: list[int] | tuple[int, ...],
     candidate_cards: list[list[int]] | None = None,
@@ -132,6 +249,9 @@ def expand_discard_tree(
     fixed_melds: int = 0,
     remaining_counts: Mapping[int, int] | None = None,
     max_draws: int | None = None,
+    use_multi_route: bool = False,
+    decision_data: dict | None = None,
+    acting_position: int = 0,
 ) -> SearchTreeResult:
     """构建第一阶段“弃牌 -> 摸牌”的显式树搜索结果。"""
     validate_hand(hand)
@@ -157,6 +277,9 @@ def expand_discard_tree(
             fixed_melds=fixed_melds,
             remaining_counts=remaining_counts,
             max_draws=max_draws,
+            use_multi_route=use_multi_route,
+            decision_data=decision_data,
+            acting_position=acting_position,
         )
 
     if not decisions:
@@ -174,6 +297,9 @@ def choose_discard(
     fixed_melds: int = 0,
     remaining_counts: Mapping[int, int] | None = None,
     max_draws: int | None = None,
+    use_multi_route: bool = False,
+    decision_data: dict | None = None,
+    acting_position: int = 0,
 ) -> DiscardDecision:
     """只返回推荐弃牌对应的一层树搜索结果。"""
     result = expand_discard_tree(
@@ -183,6 +309,9 @@ def choose_discard(
         fixed_melds=fixed_melds,
         remaining_counts=remaining_counts,
         max_draws=max_draws,
+        use_multi_route=use_multi_route,
+        decision_data=decision_data,
+        acting_position=acting_position,
     )
     return result.discard_scores[result.best_discard]
 
@@ -194,6 +323,9 @@ def _evaluate_discard(
     fixed_melds: int,
     remaining_counts: Mapping[int, int] | None,
     max_draws: int | None,
+    use_multi_route: bool,
+    decision_data: dict | None,
+    acting_position: int,
 ) -> DiscardDecision:
     """评估打出某张牌之后的一层摸牌树。"""
     analysis = analyze_hand(after_discard, fixed_melds=fixed_melds)
@@ -205,6 +337,14 @@ def _evaluate_discard(
         remaining_counts=remaining,
     )
     effective_count = sum(winning_tiles.values())
+    route_summary = _summarize_routes(
+        after_discard,
+        fixed_melds=fixed_melds,
+        remaining_counts=remaining,
+        decision_data=decision_data,
+        acting_position=acting_position,
+        pending_discard=discard,
+    ) if use_multi_route else _EMPTY_ROUTE_SUMMARY
 
     children = [
         _build_draw_node(
@@ -216,6 +356,9 @@ def _evaluate_discard(
             fixed_melds=fixed_melds,
             current_shanten=analysis.shanten,
             remaining_counts=remaining,
+            use_multi_route=use_multi_route,
+            decision_data=decision_data,
+            acting_position=acting_position,
         )
         for tile in JIUJIANG_TILE_CODES
         if remaining.get(tile, 0) > 0
@@ -262,6 +405,7 @@ def _evaluate_discard(
         expected_follow_up_effective_count=expected_follow_up_effective_count,
         hu_total_remaining=sum(child.remaining for child in hu_children),
         improving_total_remaining=sum(child.remaining for child in improving_children),
+        route_value=route_summary.route_value,
     )
     return DiscardDecision(
         discard=discard,
@@ -287,6 +431,7 @@ def _evaluate_discard(
         improving_child_count=len(improving_children),
         ting_child_count=len(ting_children),
         children=tuple(children),
+        route_summary=route_summary,
     )
 
 
@@ -299,6 +444,9 @@ def _build_draw_node(
     fixed_melds: int,
     current_shanten: int,
     remaining_counts: Mapping[int, int],
+    use_multi_route: bool,
+    decision_data: dict | None,
+    acting_position: int,
 ) -> DrawNode:
     next_hand = sorted([*after_discard, draw])
     is_hu = can_hu(next_hand, options, fixed_melds=fixed_melds)
@@ -317,8 +465,14 @@ def _build_draw_node(
         options=options,
         fixed_melds=fixed_melds,
         remaining_counts=next_remaining_counts,
+        use_multi_route=use_multi_route,
+        decision_data=decision_data,
+        acting_position=acting_position,
     )
     best_follow_up_node = follow_up_nodes[0] if follow_up_nodes else None
+    # 摸牌节点的下一次实际决策发生在“摸后再弃”阶段，因此复用最优后继的
+    # 路线摘要，避免在全部摸牌分支上重复完整枚举拆法。
+    route_summary = best_follow_up_node.route_summary if best_follow_up_node is not None else _EMPTY_ROUTE_SUMMARY
     follow_up_expected_hu_value = _expected_follow_up_component_value(follow_up_nodes, "hu_value")
     follow_up_expected_ting_value = _expected_follow_up_component_value(follow_up_nodes, "ting_value")
     follow_up_expected_improvement_value = _expected_follow_up_component_value(
@@ -388,6 +542,9 @@ def _build_draw_node(
         follow_up_expected_next_draw_bonus=follow_up_expected_next_draw_bonus,
         follow_up_score_bonus=follow_up_score_bonus,
         path_value=hu_value + ting_value + improvement_value + follow_up_score_bonus,
+        # 组合状态摘要：摸到该张牌后手牌的组合驱动信息
+        combination=_combination_from_analysis(next_analysis),
+        route_summary=route_summary,
     )
 
 
@@ -410,6 +567,7 @@ def _score_decision(
     expected_follow_up_effective_count: float,
     hu_total_remaining: int,
     improving_total_remaining: int,
+    route_value: float,
 ) -> float:
     # 第二阶段先补路径收益第一版：
     # 1. 真实胡牌张仍然是核心收益；
@@ -434,6 +592,7 @@ def _score_decision(
         + 0.8 * expected_follow_up_effective_count
         + 5 * hu_total_remaining
         + 1.5 * improving_total_remaining
+        + 12.0 * route_value
     )
 
 
@@ -536,6 +695,9 @@ def _build_follow_up_nodes(
     options: HuOptions,
     fixed_melds: int,
     remaining_counts: Mapping[int, int],
+    use_multi_route: bool,
+    decision_data: dict | None,
+    acting_position: int,
 ) -> list[FollowUpNode]:
     candidate_infos: list[tuple[int, int]] = []
     best_shanten: int | None = None
@@ -552,7 +714,9 @@ def _build_follow_up_nodes(
 
     base_nodes: list[tuple[FollowUpNode, list[int]]] = []
     for discard, shanten in candidate_infos:
-        if shanten != best_shanten:
+        # 开启多路线后允许高一向听的后继弃牌进入比较，是否保留由真实进张、
+        # 灵活度和收益决定；默认路径保持原来的最小向听收束。
+        if shanten > best_shanten + (1 if use_multi_route else 0):
             continue
         after_discard = list(next_hand)
         after_discard.remove(discard)
@@ -580,6 +744,10 @@ def _build_follow_up_nodes(
             winning_tiles=winning_tiles,
         )
         base_score = base_hu_value + base_ting_value + base_improvement_value
+        # 组合状态摘要：弃掉该张牌后手牌的组合驱动信息
+        follow_up_combination = _combination_from_analysis(
+            analyze_hand(after_discard, fixed_melds=fixed_melds)
+        )
         base_node = FollowUpNode(
             discard=discard,
             shanten=shanten,
@@ -604,6 +772,8 @@ def _build_follow_up_nodes(
             next_draw_expected_improvement_value=0.0,
             next_draw_score_bonus=0.0,
             score=base_score,
+            combination=follow_up_combination,
+            route_summary=_EMPTY_ROUTE_SUMMARY,
         )
         base_nodes.append((base_node, after_discard))
 
@@ -611,6 +781,28 @@ def _build_follow_up_nodes(
         return []
 
     base_nodes.sort(key=lambda item: _follow_up_sort_key(item[0]), reverse=True)
+    # 先用原有廉价指标截断，再只对三个最强后继运行完整多路线拆分；这是
+    # 搜索树的受控剪枝点，避免每层所有弃牌路径都指数级展开。
+    base_nodes = base_nodes[:3]
+    if use_multi_route:
+        base_nodes = [
+            (
+                replace(
+                    node,
+                    route_summary=_summarize_routes(
+                        after_discard,
+                        fixed_melds=fixed_melds,
+                        remaining_counts=remaining_counts,
+                        decision_data=decision_data,
+                        acting_position=acting_position,
+                        pending_discard=node.discard,
+                    ),
+                ),
+                after_discard,
+            )
+            for node, after_discard in base_nodes
+        ]
+        base_nodes.sort(key=lambda item: _follow_up_sort_key(item[0]), reverse=True)
 
     enriched_nodes: list[FollowUpNode] = []
     for index, (node, after_discard) in enumerate(base_nodes):
@@ -627,6 +819,9 @@ def _build_follow_up_nodes(
             options=options,
             fixed_melds=fixed_melds,
             remaining_counts=remaining_counts,
+            use_multi_route=use_multi_route,
+            decision_data=decision_data,
+            acting_position=acting_position,
         )
         next_draw_expected_hu_value = _expected_third_draw_component_value(next_draw_nodes, "hu_value")
         next_draw_expected_ting_value = _expected_third_draw_component_value(next_draw_nodes, "ting_value")
@@ -679,6 +874,7 @@ def _count_improving_draws(
 
 def _follow_up_sort_key(node: FollowUpNode) -> tuple:
     return (
+        node.route_summary.route_value,
         node.score,
         node.next_draw_score_bonus,
         bool(node.winning_tiles),
@@ -698,6 +894,9 @@ def _build_third_draw_nodes(
     options: HuOptions,
     fixed_melds: int,
     remaining_counts: Mapping[int, int],
+    use_multi_route: bool,
+    decision_data: dict | None,
+    acting_position: int,
 ) -> list[ThirdDrawNode]:
     candidates: list[ThirdDrawNode] = []
     for tile in _select_third_draw_candidates(hand_after_follow_up, current_shanten, fixed_melds, remaining_counts):
@@ -707,6 +906,13 @@ def _build_third_draw_nodes(
         next_hand = sorted([*hand_after_follow_up, tile])
         is_hu = can_hu(next_hand, options, fixed_melds=fixed_melds)
         next_analysis = analyze_hand(next_hand, fixed_melds=fixed_melds)
+        route_summary = _summarize_routes(
+            next_hand,
+            fixed_melds=fixed_melds,
+            remaining_counts=remaining_counts,
+            decision_data=decision_data,
+            acting_position=acting_position,
+        ) if use_multi_route else _EMPTY_ROUTE_SUMMARY
         hu_value = 180.0 if is_hu else 0.0
         ting_value = 0.0
         if not is_hu:
@@ -746,6 +952,9 @@ def _build_third_draw_nodes(
                 improvement_value=improvement_value,
                 path_record=path_record,
                 score=score,
+                # 组合状态摘要：第三层再摸牌后手牌的组合驱动信息
+                combination=_combination_from_analysis(next_analysis),
+                route_summary=route_summary,
             )
         )
     candidates.sort(key=_third_draw_sort_key, reverse=True)
