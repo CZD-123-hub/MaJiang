@@ -1,6 +1,6 @@
 import unittest
 
-from jiujiang_ai.hand_split import analyze_hand, is_four_hongzhong
+from jiujiang_ai.hand_split import _analyze_counts, _counts_tuple, _split_counts, analyze_hand, is_four_hongzhong
 from jiujiang_ai.tiles import HONGZHONG
 
 
@@ -30,6 +30,37 @@ class JiujiangHandSplitTests(unittest.TestCase):
     def test_four_hongzhong_detection(self):
         self.assertTrue(is_four_hongzhong([HONGZHONG, HONGZHONG, HONGZHONG, HONGZHONG]))
         self.assertFalse(is_four_hongzhong([HONGZHONG, HONGZHONG, HONGZHONG, 0x01]))
+
+    def test_split_counts_deduplicates_equivalent_partial_shapes(self):
+        hand = (0x01, 0x02, 0x03, 0x11, 0x12, 0x13)
+
+        partials = _split_counts(_counts_tuple(hand))
+        summaries = {(item.melds, item.pairs, item.taatsu, item.leftovers) for item in partials}
+
+        self.assertEqual(len(partials), len(set(partials)))
+        self.assertEqual(
+            summaries,
+            {
+                (2, 0, 0, 0),
+                (1, 0, 1, 1),
+                (1, 0, 0, 3),
+                (0, 0, 2, 2),
+                (0, 0, 1, 4),
+                (0, 0, 0, 6),
+            },
+        )
+
+    def test_analyze_hand_cache_uses_canonical_tile_counts(self):
+        hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x08, 0x09]
+        _analyze_counts.cache_clear()
+
+        analyze_hand(hand)
+        first = _analyze_counts.cache_info()
+        analyze_hand(list(reversed(hand)))
+        second = _analyze_counts.cache_info()
+
+        self.assertEqual(second.misses, first.misses)
+        self.assertEqual(second.hits, first.hits + 1)
 
 
 if __name__ == "__main__":

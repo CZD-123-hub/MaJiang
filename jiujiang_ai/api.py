@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections import Counter
+from threading import Lock
+from time import perf_counter
 
 from .context import remaining_counts_from_data
 from .decision_engine import choose_discard as choose_multi_route_discard
 from .decision_log import append_decision_log
-from .evaluator import choose_discard, hand_value
+from .evaluator import choose_discard, choose_fast_discard, hand_value
 from .hand_split import analyze_hand
 from .hu import HuOptions, can_hu
 from .search_tree import choose_discard as choose_tree_discard
@@ -29,7 +31,12 @@ from .tiles import HONGZHONG, JIUJIANG_TILE_SET
 from .win_context import detect_win_context
 
 
+_DISCARD_EVALUATION_LOCK = Lock()
+_DISCARD_DECISION_BUDGET_SECONDS = 0.30
+
+
 def get_action(data: dict) -> tuple[int, list[int]]:
+    decision_started_at = perf_counter()
     action_cards = normalize_action_cards(data.get("action_cards", {}))
 
     # 外部裁判已经明确给出可胡时，胡牌优先级最高。
@@ -46,8 +53,11 @@ def get_action(data: dict) -> tuple[int, list[int]]:
     if hand and can_hu(hand, hu_options, fixed_melds=fixed_melds):
         return ACTION_HU, []
 
+    # 只有“手牌 + 固定副露”合计为 13 张时才可能处于等待摸牌状态。
+    # 自己摸牌后的 14 张状态无需再遍历全部牌种做听牌判断。
     is_ting = bool(
         hand
+        and len(hand) + fixed_melds * 3 == 13
         and winning_tile_counts(
             hand,
             hu_options,
@@ -72,12 +82,13 @@ def get_action(data: dict) -> tuple[int, list[int]]:
         # 未开启跑红中翻倍时不能出红中；如果候选只剩红中，也不能崩溃。
         if not discard_candidates:
             return ACTION_PASS, []
-        decision = _choose_discard_decision(
+        decision = _choose_responsive_discard(
             hand,
             discard_candidates,
             data,
             fixed_melds,
             remaining_counts,
+            deadline=decision_started_at + _DISCARD_DECISION_BUDGET_SECONDS,
         )
         result = [decision.discard]
         _record_discard_decision(data, decision, result)
@@ -330,6 +341,7 @@ def _choose_discard_decision(
     data: dict,
     fixed_melds: int,
     remaining_counts: dict[int, int] | None,
+    deadline: float | None = None,
 ):
     # 开启搜索树时优先用显式树搜索；树搜索异常时自动回退到旧启发式评估器。
     visible_discards = _visible_discard_counts(data)
@@ -375,19 +387,54 @@ def _choose_discard_decision(
         fixed_melds=fixed_melds,
         visible_discards=visible_discards,
         remaining_counts=remaining_counts,
+        deadline=deadline,
     )
 
 
+def _choose_responsive_discard(
+    hand: list[int],
+    discard_candidates: list[list[int]],
+    data: dict,
+    fixed_melds: int,
+    remaining_counts: dict[int, int] | None,
+    *,
+    deadline: float | None = None,
+):
+    """同一进程只运行一个重型弃牌评估；并发请求立即走轻量合法回退。"""
+    acquired = _DISCARD_EVALUATION_LOCK.acquire(blocking=False)
+    if not acquired:
+        return choose_fast_discard(
+            hand,
+            discard_candidates,
+            fixed_melds=fixed_melds,
+            visible_discards=_visible_discard_counts(data),
+        )
+    try:
+        return _choose_discard_decision(
+            hand,
+            discard_candidates,
+            data,
+            fixed_melds,
+            remaining_counts,
+            deadline,
+        )
+    finally:
+        _DISCARD_EVALUATION_LOCK.release()
+
+
 def _best_peng(action_cards: dict[int, list[list[int]]], hand: list[int], data: dict) -> list[int] | None:
+    candidates = [
+        cards
+        for cards in action_cards.get(ACTION_PENG, [])
+        if is_legal_operation(ACTION_PENG, cards) and not _is_peng_blocked_by_pass(data, cards[0])
+    ]
+    if not candidates:
+        return None
+
     best_cards: list[int] | None = None
     fixed_melds = _fixed_meld_count(data)
     best_value = hand_value(hand, fixed_melds=fixed_melds) if hand else 0
-    for cards in action_cards.get(ACTION_PENG, []):
-        if not is_legal_operation(ACTION_PENG, cards):
-            continue
-        if _is_peng_blocked_by_pass(data, cards[0]):
-            continue
-
+    for cards in candidates:
         # 碰牌会消耗手中的两张同牌，这里用碰后的手牌价值来决定是否碰。
         simulated = list(hand)
         for tile in cards[:2]:
@@ -405,13 +452,18 @@ def _best_gang(
     hand: list[int],
     data: dict,
 ) -> tuple[int, list[int]] | None:
+    candidates = [
+        (gang_action, cards)
+        for gang_action in sorted(GANG_ACTIONS)
+        for cards in action_cards.get(gang_action, [])
+        if is_legal_operation(gang_action, cards)
+    ]
+    if not candidates:
+        return None
+
     # 没有手牌上下文时保留旧行为：只要合法就杠，避免接口提示场景直接失效。
     if not hand:
-        for gang_action in sorted(GANG_ACTIONS):
-            for cards in action_cards.get(gang_action, []):
-                if is_legal_operation(gang_action, cards):
-                    return gang_action, cards
-        return None
+        return candidates[0]
 
     fixed_melds = _fixed_meld_count(data)
     before_value = hand_value(hand, fixed_melds=fixed_melds)
@@ -420,23 +472,20 @@ def _best_gang(
     best_action: int | None = None
     best_cards: list[int] | None = None
     best_value = float("-inf")
-    for gang_action in sorted(GANG_ACTIONS):
-        for cards in action_cards.get(gang_action, []):
-            if not is_legal_operation(gang_action, cards):
-                continue
-            after_hand, after_fixed_melds = _simulate_gang_hand(hand, fixed_melds, gang_action, cards)
-            after_analysis = analyze_hand(after_hand, fixed_melds=after_fixed_melds)
-            after_value = hand_value(after_hand, fixed_melds=after_fixed_melds)
+    for gang_action, cards in candidates:
+        after_hand, after_fixed_melds = _simulate_gang_hand(hand, fixed_melds, gang_action, cards)
+        after_analysis = analyze_hand(after_hand, fixed_melds=after_fixed_melds)
+        after_value = hand_value(after_hand, fixed_melds=after_fixed_melds)
 
-            # 第一版收益判断保持保守：杠后不能明显退步。
-            if after_analysis.shanten > before_analysis.shanten:
-                continue
-            if after_analysis.shanten == before_analysis.shanten and after_value + 1.0 < before_value:
-                continue
-            if after_value > best_value:
-                best_value = after_value
-                best_action = gang_action
-                best_cards = cards
+        # 第一版收益判断保持保守：杠后不能明显退步。
+        if after_analysis.shanten > before_analysis.shanten:
+            continue
+        if after_analysis.shanten == before_analysis.shanten and after_value + 1.0 < before_value:
+            continue
+        if after_value > best_value:
+            best_value = after_value
+            best_action = gang_action
+            best_cards = cards
     if best_action is None or best_cards is None:
         return None
     return best_action, best_cards

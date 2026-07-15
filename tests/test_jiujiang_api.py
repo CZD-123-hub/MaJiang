@@ -70,6 +70,58 @@ class JiujiangApiTests(unittest.TestCase):
         self.assertEqual(action_type, ACTION_DISCARD)
         self.assertEqual(action_card, [0x08])
 
+    def test_discard_only_request_skips_peng_and_gang_value_work(self):
+        hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x05, 0x08, 0x09]
+        data = {
+            "action_cards": {"7": [[0x01], [0x08]]},
+            "player_hand_cards": [hand, [], [], []],
+            "acting_do_player_position": 0,
+        }
+
+        with patch.object(api_module, "hand_value", side_effect=AssertionError("unexpected hand_value call")):
+            action_type, action_card = get_action(data)
+
+        self.assertEqual(action_type, ACTION_DISCARD)
+        self.assertEqual(action_card, [0x08])
+
+    def test_fourteen_tile_discard_skips_waiting_hand_probe(self):
+        hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x05, 0x08, 0x09]
+        data = {
+            "action_cards": {"7": [[0x01], [0x08]]},
+            "player_hand_cards": [hand, [], [], []],
+            "acting_do_player_position": 0,
+        }
+
+        with patch.object(api_module, "winning_tile_counts") as winning_mock:
+            action_type, action_card = get_action(data)
+
+        self.assertEqual(action_type, ACTION_DISCARD)
+        self.assertEqual(action_card, [0x08])
+        winning_mock.assert_not_called()
+
+    def test_busy_discard_evaluation_uses_fast_fallback(self):
+        hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x05, 0x08, 0x09]
+        data = {
+            "action_cards": {"7": [[0x01], [0x08]]},
+            "player_hand_cards": [hand, [], [], []],
+            "acting_do_player_position": 0,
+        }
+        fake_decision = type("FastDecision", (), {"discard": 0x01})()
+
+        api_module._DISCARD_EVALUATION_LOCK.acquire()
+        try:
+            with patch.object(api_module, "choose_fast_discard", return_value=fake_decision) as fast_mock, patch.object(
+                api_module, "_choose_discard_decision"
+            ) as full_mock:
+                action_type, action_card = get_action(data)
+        finally:
+            api_module._DISCARD_EVALUATION_LOCK.release()
+
+        self.assertEqual(action_type, ACTION_DISCARD)
+        self.assertEqual(action_card, [0x01])
+        fast_mock.assert_called_once()
+        full_mock.assert_not_called()
+
     def test_discards_visible_safe_tile_from_action_history_when_offense_is_equal(self):
         hand = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x09, 0x18]
         data = {

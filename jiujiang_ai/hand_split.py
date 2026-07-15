@@ -4,7 +4,7 @@ from collections import Counter
 from dataclasses import dataclass
 from functools import lru_cache
 
-from .tiles import HONGZHONG, SUITED_TILE_CODES, can_start_sequence, is_suited, tile_rank, validate_hand
+from .tiles import HONGZHONG, SUITED_TILE_CODES, validate_hand
 
 
 @dataclass(frozen=True)
@@ -34,7 +34,17 @@ def analyze_hand(hand: list[int] | tuple[int, ...], fixed_melds: int = 0) -> Han
     validate_hand(hand)
     hongzhong_count = list(hand).count(HONGZHONG)
     ordinary = tuple(sorted(tile for tile in hand if tile != HONGZHONG))
-    partials = _split_counts(_counts_tuple(ordinary))
+    return _analyze_counts(_counts_tuple(ordinary), hongzhong_count, fixed_melds)
+
+
+@lru_cache(maxsize=100_000)
+def _analyze_counts(
+    counts: tuple[int, ...],
+    hongzhong_count: int,
+    fixed_melds: int,
+) -> HandAnalysis:
+    """分析规范化牌计数；相同子局面跨候选、跨请求直接复用。"""
+    partials = _split_counts(counts)
     return min((_apply_hongzhong(partial, hongzhong_count, fixed_melds) for partial in partials), key=_analysis_sort_key)
 
 
@@ -43,15 +53,25 @@ def _counts_tuple(tiles: tuple[int, ...]) -> tuple[int, ...]:
     return tuple(counts[tile] for tile in SUITED_TILE_CODES)
 
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=50_000)
 def _split_counts(counts: tuple[int, ...]) -> tuple[_Partial, ...]:
+    """分别拆分三门数牌后合并摘要，避免跨花色递归的组合爆炸。"""
+    partials = (_Partial(),)
+    for start in range(0, len(SUITED_TILE_CODES), 9):
+        partials = _combine_partials(partials, _split_suit_counts(counts[start : start + 9]))
+    return partials
+
+
+@lru_cache(maxsize=20_000)
+def _split_suit_counts(counts: tuple[int, ...]) -> tuple[_Partial, ...]:
+    """拆分单门1到9；顺子和搭子不会跨花色，因此可独立缓存。"""
     try:
         index = next(i for i, count in enumerate(counts) if count)
     except StopIteration:
         return (_Partial(),)
 
-    tile = SUITED_TILE_CODES[index]
     results: list[_Partial] = []
+    seen: set[_Partial] = set()
 
     def add_branch(
         new_counts: tuple[int, ...],
@@ -60,46 +80,61 @@ def _split_counts(counts: tuple[int, ...]) -> tuple[_Partial, ...]:
         taatsu: int = 0,
         leftovers: int = 0,
     ) -> None:
-        for child in _split_counts(new_counts):
-            results.append(
-                _Partial(
-                    melds=child.melds + melds,
-                    pairs=child.pairs + pairs,
-                    taatsu=child.taatsu + taatsu,
-                    leftovers=child.leftovers + leftovers,
-                )
+        for child in _split_suit_counts(new_counts):
+            result = _Partial(
+                melds=child.melds + melds,
+                pairs=child.pairs + pairs,
+                taatsu=child.taatsu + taatsu,
+                leftovers=child.leftovers + leftovers,
             )
+            if result not in seen:
+                seen.add(result)
+                results.append(result)
 
     if counts[index] >= 3:
-        add_branch(_remove_tiles(counts, (tile, tile, tile)), melds=1)
+        add_branch(_remove_indexes(counts, (index, index, index)), melds=1)
 
-    if can_start_sequence(tile):
-        seq = (tile, tile + 1, tile + 2)
-        if _has_tiles(counts, seq):
-            add_branch(_remove_tiles(counts, seq), melds=1)
+    if index <= 6 and counts[index + 1] and counts[index + 2]:
+        add_branch(_remove_indexes(counts, (index, index + 1, index + 2)), melds=1)
 
     if counts[index] >= 2:
-        add_branch(_remove_tiles(counts, (tile, tile)), pairs=1)
+        add_branch(_remove_indexes(counts, (index, index)), pairs=1)
 
-    if is_suited(tile):
-        if tile_rank(tile) <= 8 and _has_tiles(counts, (tile, tile + 1)):
-            add_branch(_remove_tiles(counts, (tile, tile + 1)), taatsu=1)
-        if tile_rank(tile) <= 7 and _has_tiles(counts, (tile, tile + 2)):
-            add_branch(_remove_tiles(counts, (tile, tile + 2)), taatsu=1)
+    if index <= 7 and counts[index + 1]:
+        add_branch(_remove_indexes(counts, (index, index + 1)), taatsu=1)
+    if index <= 6 and counts[index + 2]:
+        add_branch(_remove_indexes(counts, (index, index + 2)), taatsu=1)
 
-    add_branch(_remove_tiles(counts, (tile,)), leftovers=1)
+    add_branch(_remove_indexes(counts, (index,)), leftovers=1)
+    # 不同递归路径经常得到完全相同的结构摘要；add_branch 已按首次出现
+    # 的顺序去重，避免先堆积大量重复对象再统一清理。
     return tuple(results)
 
 
-def _has_tiles(counts: tuple[int, ...], tiles: tuple[int, ...]) -> bool:
-    needed = Counter(tiles)
-    return all(counts[SUITED_TILE_CODES.index(tile)] >= amount for tile, amount in needed.items())
+def _combine_partials(
+    left_partials: tuple[_Partial, ...],
+    right_partials: tuple[_Partial, ...],
+) -> tuple[_Partial, ...]:
+    results: list[_Partial] = []
+    seen: set[_Partial] = set()
+    for left in left_partials:
+        for right in right_partials:
+            result = _Partial(
+                melds=left.melds + right.melds,
+                pairs=left.pairs + right.pairs,
+                taatsu=left.taatsu + right.taatsu,
+                leftovers=left.leftovers + right.leftovers,
+            )
+            if result not in seen:
+                seen.add(result)
+                results.append(result)
+    return tuple(results)
 
 
-def _remove_tiles(counts: tuple[int, ...], tiles: tuple[int, ...]) -> tuple[int, ...]:
+def _remove_indexes(counts: tuple[int, ...], indexes: tuple[int, ...]) -> tuple[int, ...]:
     new_counts = list(counts)
-    for tile in tiles:
-        new_counts[SUITED_TILE_CODES.index(tile)] -= 1
+    for index in indexes:
+        new_counts[index] -= 1
     return tuple(new_counts)
 
 
