@@ -173,8 +173,13 @@ def calculate_hu_score(
 def calculate_run_hongzhong_multiplier(
     data: dict[str, Any],
     winner: int | str | None = None,
+    extra_hongzhong_discards: int = 0,
 ) -> int:
-    """计算跑红中倍率：未开启时为 1，开启后按 2^出红中次数。"""
+    """计算跑红中倍率：未开启时为 1，开启后按 2^出红中次数。
+
+    ``extra_hongzhong_discards`` 用于决策阶段模拟“本手若打出一张红中”
+    对未来成和倍率的影响；结算阶段保持默认值 0，不改变既有结算口径。
+    """
     if not _run_hongzhong_enabled(data):
         return 1
 
@@ -183,7 +188,11 @@ def calculate_run_hongzhong_multiplier(
         return 1
 
     discard_count = _count_hongzhong_discards(data, resolved_winner)
-    return 2**discard_count
+    try:
+        extra = max(0, int(extra_hongzhong_discards))
+    except (TypeError, ValueError):
+        extra = 0
+    return 2 ** (discard_count + extra)
 
 
 def _win_type_multiplier(win_type: str) -> int:

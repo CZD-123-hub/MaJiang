@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 from collections import Counter
-from threading import Lock
+from threading import BoundedSemaphore
 from time import perf_counter
 
 from .context import remaining_counts_from_data
 from .decision_engine import choose_discard as choose_multi_route_discard
 from .decision_log import append_decision_log
-from .evaluator import choose_discard, choose_fast_discard, hand_value
+from .evaluator import choose_discard, choose_fast_discard, choose_two_ply_discard, hand_value
 from .hand_split import analyze_hand
 from .hu import HuOptions, can_hu
 from .search_tree import choose_discard as choose_tree_discard
-from .settlement import calculate_total_score
+from .settlement import calculate_run_hongzhong_multiplier, calculate_total_score
 from .rules import (
     ACTION_ANGANG,
     ACTION_BUGANG,
@@ -31,8 +31,16 @@ from .tiles import HONGZHONG, JIUJIANG_TILE_SET
 from .win_context import detect_win_context
 
 
-_DISCARD_EVALUATION_LOCK = Lock()
-_DISCARD_DECISION_BUDGET_SECONDS = 0.30
+# 两个测试房间并行时允许各自完成一次精确评估；更高并发仍快速回退，避免
+# CPU 堆积导致测试服收不到动作。该上限必须经并发压测后再提高。
+_DISCARD_EVALUATION_SLOTS = BoundedSemaphore(2)
+_DISCARD_DECISION_BUDGET_SECONDS = 0.24
+# 杠分是真实即时收益，但仍保守地只折算一半，避免为了单次杠分破坏成和速度。
+_GANG_IMMEDIATE_VALUE_WEIGHT = 0.5
+# The bounded two-ply search is the current production strategy.  Callers can
+# still turn it off explicitly for A/B replay by sending
+# ``two_ply_search_enabled: false`` in their room options.
+_TWO_PLY_SEARCH_DEFAULT_ENABLED = True
 
 
 def get_action(data: dict) -> tuple[int, list[int]]:
@@ -68,12 +76,12 @@ def get_action(data: dict) -> tuple[int, list[int]]:
 
     # 杠牌保留原始动作类型：明杠=3、暗杠=5、补杠=6。
     if not is_ting:
-        best_gang = _best_gang(action_cards, hand, data)
+        best_gang = _best_gang(action_cards, hand, data, hu_options)
         if best_gang is not None:
             return best_gang
 
     # 已听牌时先不主动碰，尽量保持当前听口。
-    best_peng = None if is_ting else _best_peng(action_cards, hand, data)
+    best_peng = None if is_ting else _best_peng(action_cards, hand, data, hu_options)
     if best_peng is not None:
         return ACTION_PENG, best_peng
 
@@ -88,6 +96,7 @@ def get_action(data: dict) -> tuple[int, list[int]]:
             data,
             fixed_melds,
             remaining_counts,
+            hu_options,
             deadline=decision_started_at + _DISCARD_DECISION_BUDGET_SECONDS,
         )
         result = [decision.discard]
@@ -282,6 +291,29 @@ def _multi_route_tree_enabled(data: dict) -> bool:
     return any(_truthy(source.get(key)) for source in option_sources for key in keys)
 
 
+def _two_ply_search_enabled(data: dict) -> bool:
+    """Enable the bounded production-safe two-ply discard search."""
+    option_sources = [
+        data,
+        data.get("room_options") or {},
+        data.get("game_options") or {},
+        data.get("options") or {},
+    ]
+    keys = (
+        "two_ply_search_enabled",
+        "bounded_two_ply_enabled",
+        "use_two_ply_search",
+        "enable_two_ply_search",
+    )
+    explicit_values = [
+        source[key]
+        for source in option_sources
+        for key in keys
+        if key in source
+    ]
+    return any(_truthy(value) for value in explicit_values) if explicit_values else _TWO_PLY_SEARCH_DEFAULT_ENABLED
+
+
 def _decision_logging_enabled(data: dict) -> bool:
     option_sources = [
         data,
@@ -315,6 +347,8 @@ def _strategy_name(data: dict) -> str:
         return "multi_route"
     if _search_tree_enabled(data):
         return "search_tree"
+    if _two_ply_search_enabled(data):
+        return "two_ply"
     return "heuristic"
 
 
@@ -341,6 +375,7 @@ def _choose_discard_decision(
     data: dict,
     fixed_melds: int,
     remaining_counts: dict[int, int] | None,
+    hu_options: HuOptions,
     deadline: float | None = None,
 ):
     # 开启搜索树时优先用显式树搜索；树搜索异常时自动回退到旧启发式评估器。
@@ -350,6 +385,7 @@ def _choose_discard_decision(
             return choose_tree_discard(
                 hand,
                 discard_candidates,
+                options=hu_options,
                 fixed_melds=fixed_melds,
                 remaining_counts=remaining_counts,
                 use_multi_route=True,
@@ -376,17 +412,43 @@ def _choose_discard_decision(
             return choose_tree_discard(
                 hand,
                 discard_candidates,
+                options=hu_options,
                 fixed_melds=fixed_melds,
                 remaining_counts=remaining_counts,
             )
         except Exception:
-            pass
+            # An explicit legacy-tree experiment must preserve its historical
+            # fallback for reproducible A/B replay; it should not silently
+            # switch to the production two-ply strategy.
+            return choose_discard(
+                hand,
+                discard_candidates,
+                fixed_melds=fixed_melds,
+                visible_discards=visible_discards,
+                remaining_counts=remaining_counts,
+                options=hu_options,
+                win_multiplier_by_discard=_run_hongzhong_multipliers(data, discard_candidates),
+                deadline=deadline,
+            )
+    if _two_ply_search_enabled(data):
+        return choose_two_ply_discard(
+            hand,
+            discard_candidates,
+            fixed_melds=fixed_melds,
+            visible_discards=visible_discards,
+            remaining_counts=remaining_counts,
+            options=hu_options,
+            win_multiplier_by_discard=_run_hongzhong_multipliers(data, discard_candidates),
+            deadline=deadline,
+        )
     return choose_discard(
         hand,
         discard_candidates,
         fixed_melds=fixed_melds,
         visible_discards=visible_discards,
         remaining_counts=remaining_counts,
+        options=hu_options,
+        win_multiplier_by_discard=_run_hongzhong_multipliers(data, discard_candidates),
         deadline=deadline,
     )
 
@@ -397,11 +459,12 @@ def _choose_responsive_discard(
     data: dict,
     fixed_melds: int,
     remaining_counts: dict[int, int] | None,
+    hu_options: HuOptions,
     *,
     deadline: float | None = None,
 ):
-    """同一进程只运行一个重型弃牌评估；并发请求立即走轻量合法回退。"""
-    acquired = _DISCARD_EVALUATION_LOCK.acquire(blocking=False)
+    """最多两个重型弃牌评估并行；额外请求立即走轻量合法回退。"""
+    acquired = _DISCARD_EVALUATION_SLOTS.acquire(blocking=False)
     if not acquired:
         return choose_fast_discard(
             hand,
@@ -416,41 +479,70 @@ def _choose_responsive_discard(
             data,
             fixed_melds,
             remaining_counts,
+            hu_options,
             deadline,
         )
     finally:
-        _DISCARD_EVALUATION_LOCK.release()
+        _DISCARD_EVALUATION_SLOTS.release()
 
 
-def _best_peng(action_cards: dict[int, list[list[int]]], hand: list[int], data: dict) -> list[int] | None:
+def _best_peng(
+    action_cards: dict[int, list[list[int]]],
+    hand: list[int],
+    data: dict,
+    hu_options: HuOptions,
+) -> list[int] | None:
     candidates = [
         cards
         for cards in action_cards.get(ACTION_PENG, [])
         if is_legal_operation(ACTION_PENG, cards) and not _is_peng_blocked_by_pass(data, cards[0])
     ]
-    if not candidates:
+    if not candidates or not hand:
         return None
 
     best_cards: list[int] | None = None
     fixed_melds = _fixed_meld_count(data)
-    best_value = hand_value(hand, fixed_melds=fixed_melds) if hand else 0
+    best_value = hand_value(hand, fixed_melds=fixed_melds, options=hu_options)
+    before_shanten = analyze_hand(hand, fixed_melds=fixed_melds).shanten
     for cards in candidates:
         # 碰牌会消耗手中的两张同牌，这里用碰后的手牌价值来决定是否碰。
         simulated = list(hand)
         for tile in cards[:2]:
-            if tile in simulated:
-                simulated.remove(tile)
-        value = hand_value(simulated, fixed_melds=fixed_melds + 1) if simulated else 0
+            if tile not in simulated:
+                simulated = []
+                break
+            simulated.remove(tile)
+        if not simulated:
+            continue
+        if _best_peng_post_discard_shanten(simulated, fixed_melds + 1) > before_shanten:
+            continue
+        value = hand_value(simulated, fixed_melds=fixed_melds + 1, options=hu_options)
         if value > best_value:
             best_value = value
             best_cards = cards
     return best_cards
 
 
+def _best_peng_post_discard_shanten(hand: list[int], fixed_melds: int) -> int:
+    """Return the best normal-hand shanten after Peng's forced discard.
+
+    This is intentionally structural and cheap: it prevents only a Peng that
+    is unambiguously worse even after its best immediate discard, while
+    retaining the established immediate-value policy for all other calls.
+    """
+    if not hand:
+        return 99
+    return min(
+        analyze_hand([card for index, card in enumerate(hand) if index != discard_index], fixed_melds=fixed_melds).shanten
+        for discard_index in range(len(hand))
+    )
+
+
 def _best_gang(
     action_cards: dict[int, list[list[int]]],
     hand: list[int],
     data: dict,
+    hu_options: HuOptions,
 ) -> tuple[int, list[int]] | None:
     candidates = [
         (gang_action, cards)
@@ -466,7 +558,7 @@ def _best_gang(
         return candidates[0]
 
     fixed_melds = _fixed_meld_count(data)
-    before_value = hand_value(hand, fixed_melds=fixed_melds)
+    before_value = hand_value(hand, fixed_melds=fixed_melds, options=hu_options)
     before_analysis = analyze_hand(hand, fixed_melds=fixed_melds)
 
     best_action: int | None = None
@@ -475,20 +567,55 @@ def _best_gang(
     for gang_action, cards in candidates:
         after_hand, after_fixed_melds = _simulate_gang_hand(hand, fixed_melds, gang_action, cards)
         after_analysis = analyze_hand(after_hand, fixed_melds=after_fixed_melds)
-        after_value = hand_value(after_hand, fixed_melds=after_fixed_melds)
+        after_value = hand_value(after_hand, fixed_melds=after_fixed_melds, options=hu_options)
+        gang_value = after_value + _gang_immediate_gain(gang_action) * _GANG_IMMEDIATE_VALUE_WEIGHT
 
         # 第一版收益判断保持保守：杠后不能明显退步。
         if after_analysis.shanten > before_analysis.shanten:
             continue
-        if after_analysis.shanten == before_analysis.shanten and after_value + 1.0 < before_value:
+        if after_analysis.shanten == before_analysis.shanten and gang_value + 1.0 < before_value:
             continue
-        if after_value > best_value:
-            best_value = after_value
+        if gang_value > best_value:
+            best_value = gang_value
             best_action = gang_action
             best_cards = cards
     if best_action is None or best_cards is None:
         return None
     return best_action, best_cards
+
+
+def _gang_immediate_gain(gang_action: int) -> float:
+    """按当前九江结算规则估算杠者个人立即获得的分数。"""
+    if gang_action == ACTION_ANGANG:
+        return 6.0
+    if gang_action in {ACTION_GANG, ACTION_BUGANG}:
+        return 3.0
+    return 0.0
+
+
+def _run_hongzhong_multipliers(
+    data: dict,
+    discard_candidates: list[list[int]],
+) -> dict[int, int]:
+    """返回每种候选弃牌对应的未来跑红中胡分倍率。"""
+    position = int(data.get("acting_do_player_position", 0))
+    # 大部分候选都不是红中，先只扫描一次历史牌河；只有红中候选才额外模拟一次。
+    base_multiplier = calculate_run_hongzhong_multiplier(data, winner=position)
+    has_hongzhong_candidate = any(cards and cards[0] == HONGZHONG for cards in discard_candidates)
+    hongzhong_multiplier = (
+        calculate_run_hongzhong_multiplier(data, winner=position, extra_hongzhong_discards=1)
+        if has_hongzhong_candidate
+        else base_multiplier
+    )
+    multipliers: dict[int, int] = {}
+    for cards in discard_candidates:
+        if not cards:
+            continue
+        discard = cards[0]
+        if discard in multipliers:
+            continue
+        multipliers[discard] = hongzhong_multiplier if discard == HONGZHONG else base_multiplier
+    return multipliers
 
 
 def _fixed_meld_count(data: dict) -> int:

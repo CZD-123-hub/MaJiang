@@ -1,8 +1,11 @@
 import json
+import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.request
+from pathlib import Path
+from unittest.mock import patch
 
 from jiujiang_ai.rules import ACTION_HU
 from jiujiang_ai.server import create_server
@@ -54,25 +57,29 @@ class JiujiangHttpServerTests(unittest.TestCase):
 
     def test_post_round_end_acknowledges_payload(self):
         # /round_end 除了返回 stats，也要把单局结算结果一起返回，方便联调和对打验证。
-        server, base_url, thread = self._start_server()
-        try:
-            response = self._post_json(
-                f"{base_url}/round_end",
-                {
-                    "winner": 0,
-                    "win_type": "zimo",
-                    "player_hand_cards": [[1, 17, 18], [], [], []],
-                    "room_options": {"zama_count": 1},
-                    "zama_cards": [1],
-                },
-            )
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "jiujiang_ai.stats.DEFAULT_ROUND_LOG_PATH",
+            Path(temp_dir) / "round_end.jsonl",
+        ):
+            server, base_url, thread = self._start_server()
+            try:
+                response = self._post_json(
+                    f"{base_url}/round_end",
+                    {
+                        "winner": 0,
+                        "win_type": "zimo",
+                        "player_hand_cards": [[1, 17, 18], [], [], []],
+                        "room_options": {"zama_count": 1},
+                        "zama_cards": [1],
+                    },
+                )
 
-            self.assertEqual(response["status"], "ok")
-            self.assertTrue(response["received"])
-            self.assertIn("settlement", response)
-            self.assertEqual(response["settlement"]["score_by_player"], [9, -3, -3, -3])
-        finally:
-            self._stop_server(server, thread)
+                self.assertEqual(response["status"], "ok")
+                self.assertTrue(response["received"])
+                self.assertIn("settlement", response)
+                self.assertEqual(response["settlement"]["score_by_player"], [9, -3, -3, -3])
+            finally:
+                self._stop_server(server, thread)
 
     def test_unknown_path_returns_404(self):
         # 未支持的路径应该明确返回 404，避免调用方误以为请求成功。

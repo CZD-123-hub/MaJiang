@@ -1,4 +1,7 @@
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from jiujiang_ai.api import round_end
 from jiujiang_ai.stats import get_stats, reset_stats
@@ -6,6 +9,14 @@ from jiujiang_ai.stats import get_stats, reset_stats
 
 class JiujiangStatsWinContextTests(unittest.TestCase):
     def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self._log_path_patch = patch(
+            "jiujiang_ai.stats.DEFAULT_ROUND_LOG_PATH",
+            Path(self._temp_dir.name) / "round_end.jsonl",
+        )
+        self._log_path_patch.start()
+        self.addCleanup(self._log_path_patch.stop)
+        self.addCleanup(self._temp_dir.cleanup)
         reset_stats()
 
     def test_round_end_accumulates_win_type_and_multi_win_stats(self):

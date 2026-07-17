@@ -1,6 +1,13 @@
 import unittest
 
-from jiujiang_ai.hand_split import _analyze_counts, _counts_tuple, _split_counts, analyze_hand, is_four_hongzhong
+from jiujiang_ai.hand_split import (
+    _analyze_counts,
+    _counts_tuple,
+    _split_counts,
+    analyze_hand,
+    analyze_normalized_counts,
+    is_four_hongzhong,
+)
 from jiujiang_ai.tiles import HONGZHONG
 
 
@@ -61,6 +68,15 @@ class JiujiangHandSplitTests(unittest.TestCase):
 
         self.assertEqual(second.misses, first.misses)
         self.assertEqual(second.hits, first.hits + 1)
+
+    def test_normalized_counts_analysis_matches_hand_analysis(self):
+        hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x08, HONGZHONG]
+        ordinary = tuple(sorted(tile for tile in hand if tile != HONGZHONG))
+
+        direct = analyze_hand(hand)
+        normalized = analyze_normalized_counts(_counts_tuple(ordinary), hand.count(HONGZHONG))
+
+        self.assertEqual(normalized, direct)
 
 
 if __name__ == "__main__":

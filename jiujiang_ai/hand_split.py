@@ -34,7 +34,20 @@ def analyze_hand(hand: list[int] | tuple[int, ...], fixed_melds: int = 0) -> Han
     validate_hand(hand)
     hongzhong_count = list(hand).count(HONGZHONG)
     ordinary = tuple(sorted(tile for tile in hand if tile != HONGZHONG))
-    return _analyze_counts(_counts_tuple(ordinary), hongzhong_count, fixed_melds)
+    return analyze_normalized_counts(_counts_tuple(ordinary), hongzhong_count, fixed_melds)
+
+
+def analyze_normalized_counts(
+    ordinary_counts: tuple[int, ...],
+    hongzhong_count: int,
+    fixed_melds: int = 0,
+) -> HandAnalysis:
+    """Analyze already-normalized counts produced inside a discard search.
+
+    This deliberately skips input validation and Counter construction.  It is
+    only for internal callers that derive their counts from a validated hand.
+    """
+    return _analyze_counts(ordinary_counts, hongzhong_count, fixed_melds)
 
 
 @lru_cache(maxsize=100_000)

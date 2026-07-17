@@ -3,6 +3,7 @@
 from .api import get_action, round_end
 from .decision_engine import MultiRouteDiscardDecision, choose_discard as choose_multi_route_discard
 from .decision_log import DEFAULT_DECISION_LOG_PATH, append_decision_log, load_decision_logs
+from .evaluator import DiscardDecision, TwoPlyDiscardDecision, choose_two_ply_discard
 from .expected_value import ExpectedWinValue, estimate_win_value
 from .hand_routes import HandRoute, TaatsuKind, enumerate_hand_routes
 from .hu import HuOptions, can_hu
@@ -29,11 +30,13 @@ from .zama import calculate_zama_score
 __all__ = [
     "DEFAULT_ROUND_LOG_PATH",
     "DEFAULT_DECISION_LOG_PATH",
+    "DiscardDecision",
     "ExpectedWinValue",
     "HONGZHONG",
     "HandRoute",
     "HuOptions",
     "MultiRouteDiscardDecision",
+    "TwoPlyDiscardDecision",
     "TaatsuKind",
     "WinContext",
     "append_round_log",
@@ -47,6 +50,7 @@ __all__ = [
     "compare_strategy_snapshots",
     "choose_tree_discard",
     "choose_multi_route_discard",
+    "choose_two_ply_discard",
     "detect_round_flow",
     "detect_win_context",
     "expand_discard_tree",

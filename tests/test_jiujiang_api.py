@@ -108,14 +108,16 @@ class JiujiangApiTests(unittest.TestCase):
         }
         fake_decision = type("FastDecision", (), {"discard": 0x01})()
 
-        api_module._DISCARD_EVALUATION_LOCK.acquire()
+        api_module._DISCARD_EVALUATION_SLOTS.acquire()
+        api_module._DISCARD_EVALUATION_SLOTS.acquire()
         try:
             with patch.object(api_module, "choose_fast_discard", return_value=fake_decision) as fast_mock, patch.object(
                 api_module, "_choose_discard_decision"
             ) as full_mock:
                 action_type, action_card = get_action(data)
         finally:
-            api_module._DISCARD_EVALUATION_LOCK.release()
+            api_module._DISCARD_EVALUATION_SLOTS.release()
+            api_module._DISCARD_EVALUATION_SLOTS.release()
 
         self.assertEqual(action_type, ACTION_DISCARD)
         self.assertEqual(action_card, [0x01])
@@ -179,6 +181,11 @@ class JiujiangApiTests(unittest.TestCase):
 
         self.assertEqual(action_type, ACTION_BUGANG)
         self.assertEqual(action_card, [0x21, 0x21, 0x21, 0x21])
+
+    def test_gang_immediate_score_matches_settlement_rule(self):
+        self.assertEqual(api_module._gang_immediate_gain(ACTION_GANG), 3.0)
+        self.assertEqual(api_module._gang_immediate_gain(ACTION_BUGANG), 3.0)
+        self.assertEqual(api_module._gang_immediate_gain(ACTION_ANGANG), 6.0)
 
     def test_skips_angang_when_gang_would_make_hand_worse(self):
         # 这副牌把四张 6 筒直接暗杠后，手里有效结构明显减少，第一版收益判断应选择过牌。
@@ -266,6 +273,28 @@ class JiujiangApiTests(unittest.TestCase):
         self.assertEqual(action_type, ACTION_PENG)
         self.assertEqual(action_card, [0x06, 0x06, 0x06])
 
+    def test_peng_route_rejects_best_forced_discard_that_worsens_shanten(self):
+        hand = [0x15, 0x12, 0x29, 0x06, 0x26, 0x02, 0x13, 0x12, 0x23, 0x17, 0x28, 0x06, 0x01]
+        data = {"acting_do_player_position": 0}
+        before_shanten = api_module.analyze_hand(hand).shanten
+        with patch.object(api_module, "hand_value", return_value=10.0), patch.object(
+            api_module, "_best_peng_post_discard_shanten", return_value=before_shanten + 1
+        ):
+            result = api_module._best_peng({ACTION_PENG: [[0x06, 0x06, 0x06]]}, hand, data, api_module.HuOptions())
+
+        self.assertIsNone(result)
+
+    def test_peng_route_accepts_strictly_better_non_regressing_route(self):
+        hand = [0x15, 0x12, 0x29, 0x06, 0x26, 0x02, 0x13, 0x12, 0x23, 0x17, 0x28, 0x06, 0x01]
+        data = {"acting_do_player_position": 0}
+        before_shanten = api_module.analyze_hand(hand).shanten
+        with patch.object(api_module, "hand_value", side_effect=[10.0, 10.1]), patch.object(
+            api_module, "_best_peng_post_discard_shanten", return_value=before_shanten
+        ):
+            result = api_module._best_peng({ACTION_PENG: [[0x06, 0x06, 0x06]]}, hand, data, api_module.HuOptions())
+
+        self.assertEqual(result, [0x06, 0x06, 0x06])
+
     def test_ting_is_selected_when_no_higher_priority_action_exists(self):
         data = {"action_cards": {"0": [], "8": []}}
 
@@ -287,15 +316,19 @@ class JiujiangApiTests(unittest.TestCase):
         self.assertEqual(action_card, [])
 
     def test_round_end_acknowledges_payload(self):
-        result = round_end(
-            {
-                "winner": 0,
-                "win_type": "zimo",
-                "player_hand_cards": [[HONGZHONG, 0x11, 0x12], [], [], []],
-                "room_options": {"zama_count": 1},
-                "zama_cards": [0x01],
-            }
-        )
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "jiujiang_ai.stats.DEFAULT_ROUND_LOG_PATH",
+            Path(temp_dir) / "round_end.jsonl",
+        ):
+            result = round_end(
+                {
+                    "winner": 0,
+                    "win_type": "zimo",
+                    "player_hand_cards": [[HONGZHONG, 0x11, 0x12], [], [], []],
+                    "room_options": {"zama_count": 1},
+                    "zama_cards": [0x01],
+                }
+            )
 
         self.assertEqual(result["status"], "ok")
         self.assertIn("settlement", result)
@@ -307,7 +340,7 @@ class JiujiangApiTests(unittest.TestCase):
             "action_cards": {"7": [[0x01], [0x08]]},
             "player_hand_cards": [hand, [], [], []],
             "acting_do_player_position": 0,
-            "room_options": {"search_tree_enabled": False},
+            "room_options": {"search_tree_enabled": False, "two_ply_search_enabled": False},
         }
 
         fake_tree_decision = type("TreeDecision", (), {"discard": 0x01})()
@@ -373,6 +406,26 @@ class JiujiangApiTests(unittest.TestCase):
         multi_route_mock.assert_called_once()
         heuristic_mock.assert_not_called()
         tree_mock.assert_not_called()
+
+    def test_discard_uses_bounded_two_ply_search_when_enabled(self):
+        hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x05, 0x08, 0x09]
+        data = {
+            "action_cards": {"7": [[0x01], [0x08]]},
+            "player_hand_cards": [hand, [], [], []],
+            "acting_do_player_position": 0,
+            "room_options": {"two_ply_search_enabled": True},
+        }
+        fake_decision = type("TwoPlyDecision", (), {"discard": 0x01})()
+
+        with patch.object(api_module, "choose_two_ply_discard", return_value=fake_decision) as two_ply_mock, patch.object(
+            api_module, "choose_discard"
+        ) as heuristic_mock:
+            action_type, action_card = get_action(data)
+
+        self.assertEqual(action_type, ACTION_DISCARD)
+        self.assertEqual(action_card, [0x01])
+        two_ply_mock.assert_called_once()
+        heuristic_mock.assert_not_called()
 
     def test_discard_uses_multi_route_tree_when_enabled(self):
         hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x05, 0x08, 0x09]

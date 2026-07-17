@@ -2,7 +2,8 @@ import unittest
 from unittest.mock import patch
 
 import jiujiang_ai.evaluator as evaluator_module
-from jiujiang_ai.evaluator import choose_discard, score_discards
+from jiujiang_ai.evaluator import TwoPlyDiscardDecision, choose_discard, choose_two_ply_discard, score_discards
+from jiujiang_ai.hu import HuOptions
 from jiujiang_ai.tiles import HONGZHONG
 
 
@@ -83,6 +84,55 @@ class JiujiangEvaluatorTests(unittest.TestCase):
         decision = choose_discard(hand, candidates, visible_discards={0x18: 2})
 
         self.assertEqual(decision.discard, 0x18)
+
+    def test_qidui_option_contributes_real_waits_to_discard_scoring(self):
+        # 六对加单张的 13 张牌，开启七对后应识别出补同牌即胡的真实听口。
+        hand = [
+            0x01, 0x01, 0x04, 0x04, 0x07, 0x07,
+            0x11, 0x11, 0x14, 0x14, 0x17, 0x17,
+            0x21, 0x29,
+        ]
+
+        disabled = score_discards(hand, [[0x29]])[0x29]
+        enabled = score_discards(hand, [[0x29]], options=HuOptions(allow_qidui=True))[0x29]
+
+        self.assertEqual(disabled.winning_tiles, {})
+        self.assertEqual(enabled.winning_tiles[0x21], 3)
+        # 同时红中也能与单张补成第七对，因此总听牌张数为同牌 3 张 + 红中 4 张。
+        self.assertEqual(enabled.effective_count, 7)
+
+    def test_run_hongzhong_multiplier_increases_candidate_win_value(self):
+        hand = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x11, 0x12, 0x13, 0x18, 0x21, 0x22, 0x23, 0x09]
+
+        normal = score_discards(hand, [[0x18]])[0x18]
+        doubled = score_discards(hand, [[0x18]], win_multiplier_by_discard={0x18: 2})[0x18]
+
+        self.assertGreater(doubled.score, normal.score)
+
+    def test_two_ply_returns_a_legal_discard_and_exposes_path_summary(self):
+        hand = [0x01, 0x02, 0x04, 0x05, 0x06, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x07, 0x08, 0x19]
+        candidates = [[tile] for tile in sorted(set(hand))]
+
+        decision = choose_two_ply_discard(hand, candidates)
+
+        self.assertIn(decision.discard, hand)
+        self.assertIsInstance(decision, TwoPlyDiscardDecision)
+        self.assertGreater(decision.explored_draw_types, 0)
+        self.assertGreater(decision.expected_path_value, 0)
+
+    def test_two_ply_keeps_first_ply_result_when_expansion_hits_deadline(self):
+        hand = [0x01, 0x02, 0x04, 0x05, 0x06, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x07, 0x08, 0x19]
+        candidates = [[tile] for tile in sorted(set(hand))]
+        baseline = choose_discard(hand, candidates)
+
+        with patch.object(
+            evaluator_module,
+            "_two_ply_draw_nodes",
+            side_effect=evaluator_module._DecisionDeadlineExceeded,
+        ):
+            decision = choose_two_ply_discard(hand, candidates)
+
+        self.assertEqual(decision, baseline)
 
 
 if __name__ == "__main__":

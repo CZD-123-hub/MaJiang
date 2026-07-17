@@ -8,7 +8,7 @@ from typing import Iterable
 from .api import get_action
 
 
-SUPPORTED_STRATEGIES = ("heuristic", "multi_route", "multi_route_tree")
+SUPPORTED_STRATEGIES = ("heuristic", "two_ply", "multi_route", "multi_route_tree")
 
 
 def compare_strategy_snapshots(
@@ -46,10 +46,13 @@ def _with_strategy(snapshot: dict, strategy: str) -> dict:
             "search_tree_enabled": False,
             "multi_route_enabled": False,
             "multi_route_tree_enabled": False,
+            "two_ply_search_enabled": False,
             "decision_log_enabled": False,
         }
     )
-    if strategy == "multi_route":
+    if strategy == "two_ply":
+        room_options["two_ply_search_enabled"] = True
+    elif strategy == "multi_route":
         room_options["multi_route_enabled"] = True
     elif strategy == "multi_route_tree":
         room_options["multi_route_tree_enabled"] = True

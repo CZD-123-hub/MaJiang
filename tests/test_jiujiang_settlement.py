@@ -164,6 +164,18 @@ class JiujiangSettlementTests(unittest.TestCase):
             4,
         )
 
+    def test_run_hongzhong_multiplier_can_simulate_next_discard(self):
+        data = {
+            "winner": 0,
+            "room_options": {"run_hongzhong_double": True},
+            "played_cards": [[HONGZHONG], [], [], []],
+        }
+
+        self.assertEqual(
+            calculate_run_hongzhong_multiplier(data, extra_hongzhong_discards=1),
+            4,
+        )
+
     def test_run_hongzhong_multiplier_falls_back_to_action_seq(self):
         self.assertEqual(
             calculate_run_hongzhong_multiplier(

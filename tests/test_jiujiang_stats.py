@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 import json
+from unittest.mock import patch
 
 from jiujiang_ai.api import round_end
 from jiujiang_ai.stats import (
@@ -17,6 +18,14 @@ from jiujiang_ai.stats import (
 
 class JiujiangStatsTests(unittest.TestCase):
     def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self._log_path_patch = patch(
+            "jiujiang_ai.stats.DEFAULT_ROUND_LOG_PATH",
+            Path(self._temp_dir.name) / "round_end.jsonl",
+        )
+        self._log_path_patch.start()
+        self.addCleanup(self._log_path_patch.stop)
+        self.addCleanup(self._temp_dir.cleanup)
         # 每个测试都从空统计开始，避免不同测试之间互相影响。
         reset_stats()
 

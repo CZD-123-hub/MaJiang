@@ -38,7 +38,7 @@ def dashboard_payload(log_path: str | Path = DEFAULT_ACTION_LOG_PATH) -> dict[st
     }
 
 
-def load_recent_rounds(log_path: str | Path = DEFAULT_ROUND_LOG_PATH, limit: int = 8) -> list[dict[str, Any]]:
+def load_recent_rounds(log_path: str | Path = DEFAULT_ROUND_LOG_PATH, limit: int = 16) -> list[dict[str, Any]]:
     """读取最近已结算对局；测试服重复回调按 room_id 只展示一次。"""
     target = Path(log_path)
     if not target.exists():

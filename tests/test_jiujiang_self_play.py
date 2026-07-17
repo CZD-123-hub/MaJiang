@@ -1,9 +1,24 @@
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from jiujiang_ai.self_play import play_round, run_self_play
+from jiujiang_ai.stats import reset_stats
 
 
 class JiujiangSelfPlayTests(unittest.TestCase):
+    def setUp(self):
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self._log_path_patch = patch(
+            "jiujiang_ai.stats.DEFAULT_ROUND_LOG_PATH",
+            Path(self._temp_dir.name) / "round_end.jsonl",
+        )
+        self._log_path_patch.start()
+        self.addCleanup(self._log_path_patch.stop)
+        self.addCleanup(self._temp_dir.cleanup)
+        reset_stats()
+
     def test_same_seed_produces_same_round_summary(self):
         first = play_round(seed=20260714, decision_fn=self._first_legal_action)
         second = play_round(seed=20260714, decision_fn=self._first_legal_action)
