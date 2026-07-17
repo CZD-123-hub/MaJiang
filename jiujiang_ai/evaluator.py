@@ -56,12 +56,15 @@ def score_discards(
     remaining_counts: Mapping[int, int] | None = None,
     options: HuOptions | None = None,
     win_multiplier_by_discard: Mapping[int, int | float] | None = None,
+    score_adjustments: Mapping[int, int | float] | None = None,
+    shanten_penalty: float = 30.0,
     deadline: float | None = None,
 ) -> dict[int, DiscardDecision]:
     validate_hand(hand)
     visible_discards = visible_discards or {}
     options = options or HuOptions()
     win_multiplier_by_discard = win_multiplier_by_discard or {}
+    score_adjustments = score_adjustments or {}
     hand_counts = Counter(hand)
     ordinary_counts = tuple(hand_counts[tile] for tile in SUITED_TILE_CODES)
     hongzhong_count = hand_counts[HONGZHONG]
@@ -124,9 +127,9 @@ def score_discards(
         multiplier = _positive_multiplier(win_multiplier_by_discard.get(discard, 1.0))
         weighted_effective_count = effective_count * multiplier
         score = max(
-            _score_analysis(analysis, weighted_effective_count),
-            _score_qidui_analysis(qidui, weighted_effective_count),
-        )
+            _score_analysis(analysis, weighted_effective_count, shanten_penalty),
+            _score_qidui_analysis(qidui, weighted_effective_count, shanten_penalty),
+        ) + _score_adjustment(score_adjustments, discard)
         scores[discard] = DiscardDecision(
             discard=discard,
             score=score,
@@ -174,9 +177,9 @@ def score_discards(
         scores[discard] = DiscardDecision(
             discard=discard,
             score=max(
-                _score_analysis(analysis, weighted_effective_count),
-                _score_qidui_analysis(qidui, weighted_effective_count),
-            ),
+                _score_analysis(analysis, weighted_effective_count, shanten_penalty),
+                _score_qidui_analysis(qidui, weighted_effective_count, shanten_penalty),
+            ) + _score_adjustment(score_adjustments, discard),
             shanten_after_discard=shanten_after_discard,
             effective_count=effective_count,
             winning_tiles={},
@@ -193,6 +196,8 @@ def choose_discard(
     remaining_counts: Mapping[int, int] | None = None,
     options: HuOptions | None = None,
     win_multiplier_by_discard: Mapping[int, int | float] | None = None,
+    score_adjustments: Mapping[int, int | float] | None = None,
+    shanten_penalty: float = 30.0,
     deadline: float | None = None,
 ) -> DiscardDecision:
     if deadline is not None and perf_counter() >= deadline:
@@ -211,6 +216,8 @@ def choose_discard(
             remaining_counts=remaining_counts,
             options=options,
             win_multiplier_by_discard=win_multiplier_by_discard,
+            score_adjustments=score_adjustments,
+            shanten_penalty=shanten_penalty,
             deadline=deadline,
         )
     except _DecisionDeadlineExceeded:
@@ -233,20 +240,27 @@ def choose_two_ply_discard(
     remaining_counts: Mapping[int, int] | None = None,
     options: HuOptions | None = None,
     win_multiplier_by_discard: Mapping[int, int | float] | None = None,
+    score_adjustments: Mapping[int, int | float] | None = None,
     deadline: float | None = None,
     *,
-    root_limit: int = 3,
-    draw_limit: int = 6,
+    root_limit: int = 2,
+    draw_limit: int = 3,
+    leaf_exact_waits: bool = False,
+    first_ply_reserve_seconds: float = 0.095,
+    continuation_weight: float = 0.55,
+    shanten_penalty: float = 30.0,
 ) -> DiscardDecision:
     """Choose a discard with a time-bounded, two-ply continuation search.
 
     The first ply uses the production heuristic for every legal discard.  We
-    then expand only its best few *non-tenpai* roots through a small number of
+    then expand two leading *non-tenpai* roots through three high-value
     shanten-preserving/improving draws, and choose the best lightweight second
-    discard at each child.  The expansion is an adjustment to the robust
-    first-ply score, not a replacement for it.  If the shared request deadline
-    is reached while expanding, the already-calculated first-ply result is
-    returned unchanged.
+    discard at each child.  Part of the request budget is deliberately
+    reserved for that expansion; otherwise the first-ply effective-draw sweep
+    often reaches the deadline before a two-ply result can be formed.  The
+    expansion is an adjustment to the robust first-ply score, not a
+    replacement for it.  If the shared request deadline is reached while
+    expanding, the already-calculated first-ply result is returned unchanged.
     """
     if deadline is not None and perf_counter() >= deadline:
         return choose_fast_discard(
@@ -255,6 +269,14 @@ def choose_two_ply_discard(
             fixed_melds=fixed_melds,
             visible_discards=visible_discards,
         )
+    if continuation_weight < 0:
+        raise ValueError("continuation_weight must be non-negative")
+    # Reserving part of a shared request budget prevents a costly first-ply
+    # effective-draw sweep from starving the continuation that is meant to
+    # distinguish otherwise similar candidates.
+    first_ply_deadline = deadline
+    if deadline is not None and first_ply_reserve_seconds > 0:
+        first_ply_deadline = max(perf_counter(), deadline - first_ply_reserve_seconds)
     try:
         scores = score_discards(
             hand,
@@ -264,7 +286,9 @@ def choose_two_ply_discard(
             remaining_counts=remaining_counts,
             options=options,
             win_multiplier_by_discard=win_multiplier_by_discard,
-            deadline=deadline,
+            score_adjustments=score_adjustments,
+            shanten_penalty=shanten_penalty,
+            deadline=first_ply_deadline,
         )
     except _DecisionDeadlineExceeded:
         return choose_fast_discard(
@@ -305,6 +329,7 @@ def choose_two_ply_discard(
                 options=options,
                 remaining_counts=remaining,
                 draw_limit=draw_limit,
+                shanten_penalty=shanten_penalty,
                 deadline=extension_deadline,
             )
             if not draw_nodes:
@@ -314,10 +339,15 @@ def choose_two_ply_discard(
             total_weight = 0
             for draw, copies in draw_nodes:
                 _check_deadline(extension_deadline)
+                child_remaining = dict(remaining)
+                child_remaining[draw] = max(0, int(child_remaining.get(draw, 0)) - 1)
                 leaf_value = _best_light_followup_value(
                     [*after, draw],
                     fixed_melds=fixed_melds,
                     options=options,
+                    remaining_counts=child_remaining,
+                    exact_waits=leaf_exact_waits,
+                    shanten_penalty=shanten_penalty,
                     deadline=extension_deadline,
                 )
                 weighted_value += copies * leaf_value
@@ -330,13 +360,18 @@ def choose_two_ply_discard(
                 after,
                 fixed_melds=fixed_melds,
                 options=options,
+                shanten_penalty=shanten_penalty,
             )
             wall_total = sum(max(0, count) for count in remaining.values())
             progress_probability = total_weight / wall_total if wall_total else 0.0
-            # A continuation should influence only the fraction of draws it
-            # represents.  This keeps the known-good first-ply score dominant
-            # while rewarding roots whose useful draws retain a better shape.
-            continuation_bonus = 0.55 * progress_probability * (expected_path_value - current_shape_value)
+            # Scale the probability-weighted continuation enough that a
+            # genuinely faster, more flexible path can beat a superficially
+            # prettier first-ply shape.  The root set is still limited to the
+            # leading production candidates, so this cannot promote an
+            # otherwise weak discard from outside the trusted shortlist.
+            continuation_bonus = continuation_weight * progress_probability * (
+                expected_path_value - current_shape_value
+            )
             adjusted[root.discard] = TwoPlyDiscardDecision(
                 discard=root.discard,
                 score=root.score + continuation_bonus,
@@ -499,6 +534,7 @@ def _two_ply_draw_nodes(
     options: HuOptions | None,
     remaining_counts: Mapping[int, int],
     draw_limit: int,
+    shanten_penalty: float,
     deadline: float | None,
 ) -> list[tuple[int, int]]:
     """Return only the best bounded set of useful draw nodes.
@@ -530,7 +566,10 @@ def _two_ply_draw_nodes(
         # no-progress paths already represented by the first-ply heuristic.
         if shanten > current_shanten:
             continue
-        shape = max(_score_analysis(analysis, 0), _score_qidui_analysis(qidui, 0))
+        shape = max(
+            _score_analysis(analysis, 0, shanten_penalty),
+            _score_qidui_analysis(qidui, 0, shanten_penalty),
+        )
         nodes.append((shanten, -shape, -copies, draw))
     nodes.sort()
     return [(draw, -negative_copies) for _, _, negative_copies, draw in nodes[:max(1, draw_limit)]]
@@ -541,9 +580,18 @@ def _best_light_followup_value(
     *,
     fixed_melds: int,
     options: HuOptions | None,
-    deadline: float | None,
+    remaining_counts: Mapping[int, int] | None = None,
+    exact_waits: bool = False,
+    shanten_penalty: float = 30.0,
+    deadline: float | None = None,
 ) -> float:
-    """Score the best second discard without starting a third-ply search."""
+    """Score the best second discard without starting a third-ply search.
+
+    When ``exact_waits`` is requested, near-tenpai leaf candidates also use
+    the real Hu checker to distinguish a wide wait from a merely similar
+    hand shape.  This stays opt-in because it is deliberately more expensive
+    than the normal bounded continuation.
+    """
     counts = Counter(hand)
     ordinary_counts = tuple(counts[tile] for tile in SUITED_TILE_CODES)
     hongzhong_count = counts[HONGZHONG]
@@ -558,8 +606,31 @@ def _best_light_followup_value(
             fixed_melds=fixed_melds,
             options=options,
         )
-        best = max(best, _score_analysis(analysis, 0), _score_qidui_analysis(qidui, 0))
+        effective_count = 0
+        # This analyser labels a normal tenpai hand as shanten 1, so only
+        # invoke the exact checker at that boundary.  Higher-shanten leaves
+        # remain on the inexpensive shape path.
+        if exact_waits and _best_shanten(analysis.shanten, qidui) <= 1:
+            waits = winning_tile_counts(
+                _hand_after_discard(hand, discard),
+                options=options,
+                fixed_melds=fixed_melds,
+                remaining_counts=remaining_counts,
+            )
+            effective_count = sum(waits.values())
+        best = max(
+            best,
+            _score_analysis(analysis, effective_count, shanten_penalty),
+            _score_qidui_analysis(qidui, effective_count, shanten_penalty),
+        )
     return best
+
+
+def _hand_after_discard(hand: list[int], discard: int) -> list[int]:
+    """Return the concrete child hand used by the exact-wait leaf check."""
+    after = list(hand)
+    after.remove(discard)
+    return after
 
 
 def _light_hand_value(
@@ -567,6 +638,7 @@ def _light_hand_value(
     *,
     fixed_melds: int,
     options: HuOptions | None,
+    shanten_penalty: float = 30.0,
 ) -> float:
     counts = Counter(hand)
     ordinary_counts = tuple(counts[tile] for tile in SUITED_TILE_CODES)
@@ -578,7 +650,10 @@ def _light_hand_value(
         fixed_melds=fixed_melds,
         options=options,
     )
-    return max(_score_analysis(analysis, 0), _score_qidui_analysis(qidui, 0))
+    return max(
+        _score_analysis(analysis, 0, shanten_penalty),
+        _score_qidui_analysis(qidui, 0, shanten_penalty),
+    )
 
 
 def _counts_after_discard(
@@ -622,10 +697,10 @@ def _check_deadline(deadline: float | None) -> None:
         raise _DecisionDeadlineExceeded
 
 
-def _score_analysis(analysis, effective_count: float) -> float:
+def _score_analysis(analysis, effective_count: float, shanten_penalty: float = 30.0) -> float:
     return (
         100
-        - 30 * analysis.shanten
+        - shanten_penalty * analysis.shanten
         + 4 * analysis.melds
         + 1.5 * analysis.taatsu
         + analysis.pairs
@@ -635,12 +710,16 @@ def _score_analysis(analysis, effective_count: float) -> float:
     )
 
 
-def _score_qidui_analysis(analysis: _QiduiAnalysis | None, effective_count: float) -> float:
+def _score_qidui_analysis(
+    analysis: _QiduiAnalysis | None,
+    effective_count: float,
+    shanten_penalty: float = 30.0,
+) -> float:
     if analysis is None:
         return float("-inf")
     return (
         100
-        - 30 * analysis.shanten
+        - shanten_penalty * analysis.shanten
         + 2.5 * analysis.pairs
         + 0.8 * effective_count
         - 0.5 * analysis.singles
@@ -702,3 +781,10 @@ def _positive_multiplier(value: int | float | object) -> float:
         return max(1.0, float(value))
     except (TypeError, ValueError):
         return 1.0
+
+
+def _score_adjustment(adjustments: Mapping[int, int | float], discard: int) -> float:
+    try:
+        return float(adjustments.get(discard, 0.0))
+    except (TypeError, ValueError):
+        return 0.0

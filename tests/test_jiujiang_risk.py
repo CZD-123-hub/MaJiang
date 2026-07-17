@@ -30,6 +30,21 @@ class JiujiangRiskTests(unittest.TestCase):
         self.assertGreater(threat_risk.score, quiet_risk.score)
         self.assertIn("opponent_ting", threat_risk.reasons)
 
+    def test_teammate_discard_is_not_treated_as_opponent_safety(self):
+        data = {
+            "action_seq": [[3, ACTION_DISCARD, 0x18]],
+            "played_cards": [[], [], [], []],
+        }
+
+        risks = evaluate_discard_risks(
+            data,
+            acting_position=1,
+            candidates=(0x18,),
+            opponent_positions=(0, 2),
+        )
+
+        self.assertNotIn("opponent_discard", risks[0x18].reasons)
+
 
 if __name__ == "__main__":
     unittest.main()

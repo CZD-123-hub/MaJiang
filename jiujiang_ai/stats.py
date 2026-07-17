@@ -91,6 +91,7 @@ def append_action_log(
     action_type: int,
     action_card: list[int],
     client: str | None = None,
+    strategy_variant: str | None = None,
     log_path: str | Path | None = None,
 ) -> Path:
     """追加一条 /get_action 的实际决策，供远程对局报告精确统计碰杠胡。"""
@@ -104,6 +105,7 @@ def append_action_log(
         "action_type": action_type,
         "action_card": list(action_card),
         "client": client,
+        "strategy_variant": strategy_variant,
         "table_state": _action_table_state(data),
     }
     with target.open("a", encoding="utf-8") as file:

@@ -85,6 +85,15 @@ class JiujiangEvaluatorTests(unittest.TestCase):
 
         self.assertEqual(decision.discard, 0x18)
 
+    def test_score_adjustment_is_applied_to_candidate_value(self):
+        hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x05, 0x08, 0x09]
+        candidates = [[0x01], [0x08]]
+
+        baseline = score_discards(hand, candidates)
+        adjusted = score_discards(hand, candidates, score_adjustments={0x08: -100.0})
+
+        self.assertEqual(adjusted[0x08].score, baseline[0x08].score - 100.0)
+
     def test_qidui_option_contributes_real_waits_to_discard_scoring(self):
         # 六对加单张的 13 张牌，开启七对后应识别出补同牌即胡的真实听口。
         hand = [
@@ -133,6 +142,52 @@ class JiujiangEvaluatorTests(unittest.TestCase):
             decision = choose_two_ply_discard(hand, candidates)
 
         self.assertEqual(decision, baseline)
+
+    def test_two_ply_rejects_negative_continuation_weight(self):
+        hand = [0x01, 0x02, 0x04, 0x05, 0x06, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x07, 0x08, 0x19]
+        candidates = [[tile] for tile in sorted(set(hand))]
+
+        with self.assertRaises(ValueError):
+            choose_two_ply_discard(hand, candidates, continuation_weight=-0.1)
+
+    def test_shanten_penalty_is_applied_consistently_to_shape_score(self):
+        analysis = type(
+            "Analysis",
+            (),
+            {"shanten": 2, "melds": 1, "taatsu": 2, "pairs": 1, "leftovers": 3, "hongzhong_used": 0},
+        )()
+
+        baseline = evaluator_module._score_analysis(analysis, effective_count=10, shanten_penalty=30.0)
+        candidate = evaluator_module._score_analysis(analysis, effective_count=10, shanten_penalty=35.0)
+
+        self.assertEqual(candidate, baseline - 10.0)
+
+    def test_exact_wait_leaf_scores_real_wait_width(self):
+        # After discarding 0x09 this is four complete melds plus a single
+        # 0x09, so the leaf is an exact one-tile wait rather than merely a
+        # visually good hand shape.
+        hand = [
+            0x01, 0x02, 0x03,
+            0x04, 0x05, 0x06,
+            0x11, 0x12, 0x13,
+            0x21, 0x22, 0x23,
+            0x09, 0x09,
+        ]
+
+        shape_only = evaluator_module._best_light_followup_value(
+            hand,
+            fixed_melds=0,
+            options=HuOptions(),
+            exact_waits=False,
+        )
+        exact_wait = evaluator_module._best_light_followup_value(
+            hand,
+            fixed_melds=0,
+            options=HuOptions(),
+            exact_waits=True,
+        )
+
+        self.assertGreater(exact_wait, shape_only)
 
 
 if __name__ == "__main__":

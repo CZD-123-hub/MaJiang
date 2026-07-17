@@ -8,7 +8,7 @@ from typing import Any
 from flask import Flask, jsonify, request
 from werkzeug.serving import WSGIRequestHandler, make_server
 
-from .api import get_action, round_end
+from .api import get_action, round_end, strategy_variant
 from .dashboard import dashboard_payload
 from .stats import append_action_log
 
@@ -78,6 +78,7 @@ def create_app() -> Flask:
             sorted(str(key) for key in (data.get("action_cards") or {})),
         )
         action_type, action_card = get_action(data)
+        variant = strategy_variant(data)
         response = {"action_card": action_card, "action_type": action_type}
         try:
             append_action_log(
@@ -85,14 +86,16 @@ def create_app() -> Flask:
                 action_type=action_type,
                 action_card=action_card,
                 client=request.remote_addr,
+                strategy_variant=variant,
             )
         except OSError:
             # 观测日志写入失败不能影响实际对局响应。
             pass
         LOGGER.info(
-            "get_action response room_id=%s player_id=%s action_type=%s action_card=%s elapsed_ms=%.1f",
+            "get_action response room_id=%s player_id=%s strategy_variant=%s action_type=%s action_card=%s elapsed_ms=%.1f",
             data.get("room_id"),
             _player_identity(data, position),
+            variant,
             action_type,
             action_card,
             (time.perf_counter() - started_at) * 1000,

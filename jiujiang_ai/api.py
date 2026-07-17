@@ -11,6 +11,7 @@ from .evaluator import choose_discard, choose_fast_discard, choose_two_ply_disca
 from .hand_split import analyze_hand
 from .hu import HuOptions, can_hu
 from .search_tree import choose_discard as choose_tree_discard
+from .risk import evaluate_discard_risks
 from .settlement import calculate_run_hongzhong_multiplier, calculate_total_score
 from .rules import (
     ACTION_ANGANG,
@@ -41,6 +42,8 @@ _GANG_IMMEDIATE_VALUE_WEIGHT = 0.5
 # still turn it off explicitly for A/B replay by sending
 # ``two_ply_search_enabled: false`` in their room options.
 _TWO_PLY_SEARCH_DEFAULT_ENABLED = True
+_BASELINE_SHANTEN_PENALTY = 30.0
+_CANDIDATE_SHANTEN_PENALTY = 35.0
 
 
 def get_action(data: dict) -> tuple[int, list[int]]:
@@ -314,6 +317,30 @@ def _two_ply_search_enabled(data: dict) -> bool:
     return any(_truthy(value) for value in explicit_values) if explicit_values else _TWO_PLY_SEARCH_DEFAULT_ENABLED
 
 
+def _team_value_search_enabled(data: dict) -> bool:
+    """Opt in to team-aware risk adjustments for discard decisions."""
+    option_sources = [
+        data,
+        data.get("room_options") or {},
+        data.get("game_options") or {},
+        data.get("options") or {},
+    ]
+    keys = ("team_value_search_enabled", "team_risk_enabled")
+    return any(_truthy(source.get(key)) for source in option_sources for key in keys)
+
+
+def _two_ply_leaf_waits_enabled(data: dict) -> bool:
+    """Opt in to exact waiting-tile checks at two-ply leaf nodes."""
+    option_sources = [
+        data,
+        data.get("room_options") or {},
+        data.get("game_options") or {},
+        data.get("options") or {},
+    ]
+    keys = ("two_ply_leaf_waits_enabled", "two_ply_exact_waits_enabled")
+    return any(_truthy(source.get(key)) for source in option_sources for key in keys)
+
+
 def _decision_logging_enabled(data: dict) -> bool:
     option_sources = [
         data,
@@ -340,7 +367,8 @@ def _decision_log_path(data: dict) -> str | None:
     return None
 
 
-def _strategy_name(data: dict) -> str:
+def strategy_variant(data: dict) -> str:
+    """Return the deterministic live A/B strategy label for this room."""
     if _multi_route_tree_enabled(data):
         return "multi_route_tree"
     if _multi_route_enabled(data):
@@ -348,8 +376,18 @@ def _strategy_name(data: dict) -> str:
     if _search_tree_enabled(data):
         return "search_tree"
     if _two_ply_search_enabled(data):
-        return "two_ply"
+        penalty = _shanten_penalty_for_room(data)
+        return f"two_ply_shanten{int(penalty)}"
     return "heuristic"
+
+
+def _strategy_name(data: dict) -> str:
+    return strategy_variant(data)
+
+
+def _shanten_penalty_for_room(data: dict) -> float:
+    """Use baseline 30 for every live room while candidate 35 is paused."""
+    return _BASELINE_SHANTEN_PENALTY
 
 
 def _record_discard_decision(data: dict, decision: object, action_card: list[int]) -> None:
@@ -380,6 +418,11 @@ def _choose_discard_decision(
 ):
     # 开启搜索树时优先用显式树搜索；树搜索异常时自动回退到旧启发式评估器。
     visible_discards = _visible_discard_counts(data)
+    score_adjustments = (
+        _team_value_score_adjustments(data, discard_candidates)
+        if _team_value_search_enabled(data)
+        else None
+    )
     if _multi_route_tree_enabled(data):
         try:
             return choose_tree_discard(
@@ -428,6 +471,8 @@ def _choose_discard_decision(
                 remaining_counts=remaining_counts,
                 options=hu_options,
                 win_multiplier_by_discard=_run_hongzhong_multipliers(data, discard_candidates),
+                score_adjustments=score_adjustments,
+                shanten_penalty=_shanten_penalty_for_room(data),
                 deadline=deadline,
             )
     if _two_ply_search_enabled(data):
@@ -439,7 +484,11 @@ def _choose_discard_decision(
             remaining_counts=remaining_counts,
             options=hu_options,
             win_multiplier_by_discard=_run_hongzhong_multipliers(data, discard_candidates),
+            score_adjustments=score_adjustments,
             deadline=deadline,
+            leaf_exact_waits=_two_ply_leaf_waits_enabled(data),
+            continuation_weight=0.55,
+            shanten_penalty=_shanten_penalty_for_room(data),
         )
     return choose_discard(
         hand,
@@ -449,6 +498,8 @@ def _choose_discard_decision(
         remaining_counts=remaining_counts,
         options=hu_options,
         win_multiplier_by_discard=_run_hongzhong_multipliers(data, discard_candidates),
+        score_adjustments=score_adjustments,
+        shanten_penalty=_shanten_penalty_for_room(data),
         deadline=deadline,
     )
 
@@ -616,6 +667,77 @@ def _run_hongzhong_multipliers(
             continue
         multipliers[discard] = hongzhong_multiplier if discard == HONGZHONG else base_multiplier
     return multipliers
+
+
+def _team_value_score_adjustments(data: dict, discard_candidates: list[list[int]]) -> dict[int, float]:
+    """Return conditional team-aware danger penalties for candidate discards.
+
+    The penalty is deliberately inactive in quiet early hands.  It becomes
+    relevant only when opponents have opened melds, declared Ting, or the
+    wall is late; otherwise this feature must not trade early attacking speed
+    for generic caution.
+    """
+    position = int(data.get("acting_do_player_position", 0))
+    player_count = _player_count_from_data(data)
+    team_positions = _team_positions(data, position, player_count)
+    opponents = set(range(player_count)) - team_positions
+    if not opponents:
+        return {}
+
+    opponent_melds = sum(_meld_count_for_player(data, opponent) for opponent in opponents)
+    ting_players = {
+        action[0]
+        for action in data.get("action_seq") or []
+        if isinstance(action, (list, tuple)) and len(action) >= 2 and action[1] == ACTION_TING
+    }
+    remaining = data.get("remain_card_count")
+    late_wall = isinstance(remaining, int) and remaining <= 20
+    if not opponent_melds and not (ting_players & opponents) and not late_wall:
+        return {}
+
+    weight = 2.5 + min(opponent_melds, 4) * 0.9
+    if ting_players & opponents:
+        weight += 2.5
+    if late_wall:
+        weight += 1.5
+    tiles = [cards[0] for cards in discard_candidates if cards]
+    risks = evaluate_discard_risks(
+        data,
+        acting_position=position,
+        candidates=tiles,
+        opponent_positions=opponents,
+    )
+    return {tile: -weight * risk.score for tile, risk in risks.items()}
+
+
+def _team_positions(data: dict, position: int, player_count: int) -> set[int]:
+    for source in (data, data.get("room_options") or {}, data.get("game_options") or {}, data.get("options") or {}):
+        for key in ("team_positions", "ally_positions"):
+            value = source.get(key)
+            if isinstance(value, (list, tuple, set)):
+                positions = {item for item in value if isinstance(item, int) and 0 <= item < player_count}
+                if position in positions:
+                    return positions
+    # The test server uses the opposite seat as teammate.  Keeping this as a
+    # fallback preserves correct behavior when room options omit team metadata.
+    return {position, (position + 2) % player_count} if player_count >= 4 else {position}
+
+
+def _player_count_from_data(data: dict) -> int:
+    for field in ("player_hand_cards", "played_cards", "player_peng_cards"):
+        value = data.get(field)
+        if isinstance(value, list) and value:
+            return max(4, len(value))
+    return 4
+
+
+def _meld_count_for_player(data: dict, position: int) -> int:
+    total = 0
+    for field in ("player_chi_cards", "player_peng_cards", "player_gang_cards", "player_bugang_cards", "player_angang_cards"):
+        groups = data.get(field) or []
+        if 0 <= position < len(groups):
+            total += len(groups[position] or [])
+    return total
 
 
 def _fixed_meld_count(data: dict) -> int:

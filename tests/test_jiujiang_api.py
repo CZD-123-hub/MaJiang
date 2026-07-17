@@ -427,6 +427,49 @@ class JiujiangApiTests(unittest.TestCase):
         two_ply_mock.assert_called_once()
         heuristic_mock.assert_not_called()
 
+    def test_two_ply_leaf_wait_option_is_forwarded(self):
+        hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x05, 0x08, 0x09]
+        data = {
+            "action_cards": {"7": [[0x01], [0x08]]},
+            "player_hand_cards": [hand, [], [], []],
+            "acting_do_player_position": 0,
+            "room_options": {"two_ply_leaf_waits_enabled": True},
+        }
+        fake_decision = type("TwoPlyDecision", (), {"discard": 0x01})()
+
+        with patch.object(api_module, "choose_two_ply_discard", return_value=fake_decision) as two_ply_mock:
+            action_type, action_card = get_action(data)
+
+        self.assertEqual((action_type, action_card), (ACTION_DISCARD, [0x01]))
+        self.assertTrue(two_ply_mock.call_args.kwargs["leaf_exact_waits"])
+
+    def test_all_rooms_use_shanten30_while_shanten35_is_paused(self):
+        hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x05, 0x08, 0x09]
+        fake_decision = type("TwoPlyDecision", (), {"discard": 0x01})()
+
+        observed = {}
+        for room_id in (8, 9, None):
+            data = {
+                "action_cards": {"7": [[0x01], [0x08]]},
+                "player_hand_cards": [hand, [], [], []],
+                "acting_do_player_position": 0,
+            }
+            if room_id is not None:
+                data["room_id"] = room_id
+            with patch.object(api_module, "choose_two_ply_discard", return_value=fake_decision) as two_ply_mock:
+                get_action(data)
+            observed[room_id] = two_ply_mock.call_args.kwargs
+
+        self.assertEqual(observed[8]["shanten_penalty"], 30.0)
+        self.assertEqual(observed[9]["shanten_penalty"], 30.0)
+        self.assertEqual(observed[None]["shanten_penalty"], 30.0)
+        self.assertEqual(observed[8]["continuation_weight"], 0.55)
+        self.assertEqual(observed[9]["continuation_weight"], 0.55)
+        self.assertEqual(observed[None]["continuation_weight"], 0.55)
+        self.assertEqual(api_module.strategy_variant({"room_id": 8}), "two_ply_shanten30")
+        self.assertEqual(api_module.strategy_variant({"room_id": 9}), "two_ply_shanten30")
+        self.assertEqual(api_module.strategy_variant({}), "two_ply_shanten30")
+
     def test_discard_uses_multi_route_tree_when_enabled(self):
         hand = [0x01, 0x02, 0x03, 0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x05, 0x05, 0x05, 0x08, 0x09]
         data = {

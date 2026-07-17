@@ -27,10 +27,11 @@ def evaluate_discard_risks(
     *,
     acting_position: int,
     candidates: Iterable[int],
+    opponent_positions: Iterable[int] | None = None,
 ) -> dict[int, DiscardRisk]:
     """评估候选牌的相对风险，返回范围为 0 到 1 的保守分数。"""
     visible_counts, opponent_discards = _visible_discards(data)
-    opponent_threats = _opponent_threats(data, acting_position)
+    opponent_threats = _opponent_threats(data, acting_position, opponent_positions=opponent_positions)
     risks: dict[int, DiscardRisk] = {}
     for tile in set(candidates):
         if tile not in JIUJIANG_TILE_SET:
@@ -76,8 +77,18 @@ def _tile_risk(
     )
 
 
-def _opponent_threats(data: dict, acting_position: int) -> dict[int, tuple[float, tuple[str, ...]]]:
+def _opponent_threats(
+    data: dict,
+    acting_position: int,
+    *,
+    opponent_positions: Iterable[int] | None = None,
+) -> dict[int, tuple[float, tuple[str, ...]]]:
     player_count = _player_count(data)
+    selected_opponents = (
+        {position for position in opponent_positions if 0 <= position < player_count and position != acting_position}
+        if opponent_positions is not None
+        else set(range(player_count)) - {acting_position}
+    )
     turn_count = sum(1 for action in data.get("action_seq") or [] if _is_action(action, ACTION_DISCARD))
     wall_size = len(data["remain_card_stack"]) if isinstance(data.get("remain_card_stack"), list) else None
     ting_players = {
@@ -88,9 +99,7 @@ def _opponent_threats(data: dict, acting_position: int) -> dict[int, tuple[float
     meld_counts = _meld_counts(data, player_count)
 
     threats: dict[int, tuple[float, tuple[str, ...]]] = {}
-    for opponent in range(player_count):
-        if opponent == acting_position:
-            continue
+    for opponent in sorted(selected_opponents):
         score = 0.18 + min(turn_count, 18) * 0.015 + min(meld_counts[opponent], 4) * 0.09
         reasons: list[str] = []
         if turn_count:
