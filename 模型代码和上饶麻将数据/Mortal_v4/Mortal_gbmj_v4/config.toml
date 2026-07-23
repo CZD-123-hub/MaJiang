@@ -1,0 +1,389 @@
+[control]
+device = "cuda:0"
+enable_cudnn_benchmark = true
+enable_amp = true
+resume = true
+
+batch_size = 1024
+eval_batch_size = 1024
+# [Modified] Paper no-augmentation baseline is trained by epochs, not by an
+# early step cap. Keep step-based save/eval for monitoring only.
+max_steps = 0
+max_epochs = 8
+steps_per_epoch_estimate = 0
+log_every = 100
+save_every = 2000
+eval_every = 5000
+eval_max_batches = 0
+
+# [V4 direct-235] Restored v3-style single 235-way policy head.
+tensorboard_dir = "runs/v4_direct235_v3former_public12"
+checkpoint_dir = "checkpoints/v4_direct235_v3former_public12"
+
+[dataset]
+train_globs = [
+]
+
+# [V4 data-mix] Source-specific training exposure.
+# Keep train_globs as the union/fallback if you want, but the following globs
+# decide which files receive public/private augmentation schedules.
+public_train_globs = [
+    "../dataset/version3/east/*.json",
+    "../dataset/version3/south/*.json",
+    "../dataset/version3/west/*.json",
+    "../dataset/version3/north/*.json",
+    "../dataset/version3/test/*.json",
+]
+
+# Fill this with your non-public dataset paths.  Validation remains controlled
+# only by val_globs/test_globs and is never augmented.
+private_train_globs = [
+    # [V4 expectation contrast] Public-only training; keep private data disabled.
+]
+
+public_augmentation_factor = 12
+private_augmentation_factor = 2
+
+val_globs = [
+    "../dataset/version3/val/*.json",
+]
+test_globs = [
+
+]
+
+split_index = "checkpoints/shared/file_split_v4_direct235_v3former_public12.pth"
+split_seed = 20260329
+val_ratio = 0.02
+file_batch_size = 16
+num_workers = 16
+eval_num_workers = 6
+prefetch_factor = 4
+pin_memory = true
+persistent_workers = true
+multiprocessing_context = "spawn"
+shuffle_files = true
+# [V4 direct-235] Keep the v3-style single-state CNN+spatial-Transformer path.
+history_len = 0
+# Paper experiment presets:
+# - No augmentation baseline:
+#     augmentation_factor = 1
+# - 12x augmentation experiment:
+#     augmentation_factor = 12
+#
+# Supported factors:
+# 1  = no augmentation
+# 2  = identity + number mirror
+# 6  = all suit permutations
+# 12 = all suit permutations x mirror
+augmentation_factor = 12
+shuffle_augmentation = true
+
+[model]
+arch = "mahjong_v3_msres2_transformer"
+channels = 256
+num_blocks = 10
+base_width = 26
+scale = 4
+transformer_dim = 512
+transformer_heads = 8
+transformer_layers = 3
+transformer_mlp_ratio = 4.0
+head_hidden = 512
+dropout = 0.15
+num_classes = 235
+
+[eval]
+checkpoint = "best"
+default_split = "val"
+default_max_batches = 0
+
+[optim]
+optimizer = "adamw"
+lr = 3e-4
+eps = 1e-8
+betas = [0.9, 0.999]
+weight_decay = 2e-4
+max_grad_norm = 1.0
+
+[loss]
+label_smoothing = 0.04
+# Supervised learning trains only the 235-way policy.  PPO keeps a separate
+# independent critic/value network under [rl].
+value_loss_weight = 0.0
+
+[selection]
+metric = "action_acc"
+secondary_metric = "discard_acc"
+
+[critic_pretrain]
+# Pretrain only the independent PPO critic on the same supervised log samples.
+# The saved checkpoint contains the unchanged actor plus the pretrained critic,
+# so PPO can load it through [rl].init_checkpoint.
+device = "cuda:0"
+init_checkpoint = "/data/mortal_gbmj/Mortal_gbmj_v3/checkpoints/v3_msres2former_public_aug12_finetune/gbmj_policy_best.pth"
+checkpoint_dir = "checkpoints/critic_pretrain_direct235_current_reward"
+tensorboard_dir = "runs/critic_pretrain_direct235_current_reward"
+resume = true
+
+epochs = 3
+batch_size = 1024
+eval_batch_size = 1024
+lr = 2e-4
+optimizer = "adam"
+betas = [0.9, 0.999]
+eps = 1e-8
+weight_decay = 0.0
+max_grad_norm = 0.5
+enable_amp = true
+
+# 12 = all suit permutations x number mirror.  By default this also applies to
+# public/private source schedules; use --preserve-source-augmentation to keep
+# the source-specific factors from [dataset].
+augmentation_factor = 12
+override_source_augmentation = true
+
+loss = "huber"
+huber_delta = 1.0
+target_scale = 1.0
+target_clip = 4.0
+enable_draw_tenpai_target = true
+self_draw_reward = 2.0
+win_reward = 1.5
+deal_in_penalty = -2.0
+other_self_draw_penalty = -1.0
+other_ron_penalty = -0.5
+score_delta_reward_scale = 40.0
+score_delta_reward_clip = 2.0
+tenpai_reward = 0.1
+noten_penalty = -0.1
+log_every = 100
+save_every = 2000
+eval_every = 0
+eval_max_batches = 0
+max_train_batches = 0
+
+# Keep this aligned with [rl] so PPO can reuse the pretrained critic weights.
+critic_feature_dim = 0
+critic_feature_hidden = 0
+# Supervised logs do not carry PPO-only critic features.  Zero this branch so
+# the pretrained checkpoint does not inject random feature noise at PPO start.
+zero_critic_feature_proj = true
+
+[grp]
+# Global Reward Predictor.  Train this on full 16-hand game logs, not on the
+# old wind4 split.  Nonexistent globs are ignored so the same config can be
+# shared between Windows preprocessing and Linux training machines.
+train_globs = [
+    "/data/mortal_gbmj/dataset/round16/full16/**/*.json",
+]
+val_globs = [
+]
+split_index = "checkpoints/shared/file_split_v4_grp_full16.pth"
+split_seed = 20260624
+val_ratio = 0.02
+
+device = "cuda:0"
+init_policy_checkpoint = "/data/mortal_gbmj/Mortal_gbmj_v3/checkpoints/v3_msres2former_public_aug12_finetune/gbmj_policy_best.pth"
+checkpoint_dir = "checkpoints/grp_v3_global_reward"
+tensorboard_dir = "runs/grp_v3_global_reward"
+resume = true
+
+epochs = 3
+batch_size = 768
+eval_batch_size = 1024
+file_batch_size = 8
+num_workers = 12
+eval_num_workers = 6
+prefetch_factor = 3
+augmentation_factor = 1
+shuffle_files = true
+shuffle_augmentation = true
+skip_bad_files = true
+enable_amp = true
+
+optimizer = "adamw"
+lr = 2e-4
+betas = [0.9, 0.999]
+eps = 1e-8
+weight_decay = 1e-4
+max_grad_norm = 0.5
+loss = "huber"
+huber_delta = 0.5
+
+total_rounds = 16
+rank_weight = 1.0
+score_weight = 0.25
+score_scale = 200.0
+target_clip = 1.5
+feature_hidden = 64
+value_hidden = 512
+freeze_encoder = false
+
+log_every = 100
+save_every = 2000
+eval_every = 5000
+eval_max_batches = 0
+max_train_batches = 0
+
+[rl]
+# [V4 GRP PPO] Start from the strong v3 supervised policy.  The critic remains
+# independent; GRP supplies only frozen reward shaping.
+device = "cuda:0"
+init_checkpoint = "/data/mortal_gbmj/Mortal_gbmj_v3/checkpoints/v3_msres2former_public_aug12_finetune/gbmj_policy_best.pth"
+baseline_checkpoint = "/data/mortal_gbmj/Mortal_gbmj_v3/checkpoints/v3_msres2former_public_aug12_finetune/gbmj_policy_best.pth"
+checkpoint_dir = "checkpoints/rl_direct235_v3_grp_global"
+tensorboard_dir = "runs/rl_direct235_v3_grp_global"
+resume = true
+
+iterations = 200
+seed_start = 90000
+seed_key = "0x20260514"
+# [V4 deal-in-control PPO] A rollout game contains 16 hands, but PPO cuts
+# return/GAE at each hand boundary, so hands remain credit-independent.
+dppo_num_actors = 8
+rollout_seed_count = 8
+# 16 means a full four-wind game; reward/GAE is still segmented per hand.
+game_length = 16
+disable_progress_bar = false
+
+# [V4 MJ_RM strict DPPO] PPO clipping update.  The value head is new, so it
+# uses a slightly larger LR than the policy initialized from v3 supervised SL.
+# [V4 MJ_RM formula alignment] Paper DPPO uses Adam, policy lr=1e-4 and value lr=1e-3.
+optimizer = "adam"
+policy_lr = 1e-5
+value_lr = 2e-4
+betas = [0.9, 0.999]
+eps = 1e-8
+weight_decay = 0.0
+gamma = 0.99
+gae_lambda = 0.95
+advantage_mode = "returns"
+value_target = "returns"
+clip_range = 0.08
+update_epochs = 2
+minibatch_size = 512
+max_grad_norm = 0.5
+value_coef = 0.50
+entropy_coef = 0.0001
+target_approx_kl = 0.012
+# [V4 critic pretrain] The init checkpoint now contains a pretrained
+# independent critic. Keep one short warmup pass to adapt it to hand returns.
+critic_warmup_iterations = 1
+critic_warmup_epochs = 1
+critic_warmup_minibatch_size = 512
+# Keep actor deployment identical to v3.  The critic stays independent, but
+# does not receive the old route-potential feature branch in the GRP run.
+enable_asymmetric_critic = false
+critic_feature_dim = 0
+critic_feature_hidden = 0
+critic_value_eval_batch_size = 512
+keep_ppo_batch_on_cpu = true
+freeze_actor_backbone = true
+# [V4 stable PPO] Adaptive entropy/KL follows the paper's stabilizing intent.
+adaptive_entropy = true
+entropy_target = 0.08
+entropy_adjust_rate = 1.05
+entropy_coef_min = 0.0
+entropy_coef_max = 0.0005
+adaptive_kl = true
+kl_coef = 0.001
+kl_coef_min = 0.0001
+kl_coef_max = 0.01
+kl_coef_adjust_rate = 1.5
+# [V4 MJ_T rollback] Keep accumulated-drift KL-to-SL off for this run.  MJ_T
+# relies on PPO old/new KL plus entropy scheduling, not a fixed SL anchor loss.
+enable_ref_kl = false
+adaptive_ref_kl = true
+ref_kl_target = 0.01
+ref_kl_coef = 0.0
+ref_kl_coef_min = 0.02
+ref_kl_coef_max = 0.50
+ref_kl_adjust_rate = 1.5
+# [V4 potential reward] Disable the old ordinary-shanten adaptive loss.  Dense
+# guidance now comes from legal main-fan route potential instead of raw shanten.
+enable_shanten_adaptive_loss = false
+shanten_loss_beta = 0.0
+
+# [V4 rank-aligned evaluation] Full-game rank is used for checkpoint selection
+# and validation, not as a direct PPO trajectory reward.
+rank_bonus = [0.0, 0.0, 0.0, 0.0]
+
+# [V4 frequency-route PPO] Main-fan route potential:
+#   route_value = frequency_weight / (distance + 1) ^ potential_distance_alpha
+#   Score = top1 + decay*top2 + decay^2*top3 + ...
+#   r = clip(potential_weight * (gamma * Score(next) - Score(prev))).
+enable_mjrm_reward = true
+enable_potential_reward = false
+potential_source = "tables"
+potential_table_dir = "data"
+potential_weight = 0.0
+potential_gamma = 0.99
+potential_delta_mode = "discounted"
+# Backfill part of each hand's sparse terminal outcome; dense step rewards
+# below keep the signal alive before the hand ends.
+potential_terminal_beta = 0.0
+terminal_redistribute_decay = 0.96
+potential_score_scale = 4.0
+potential_score_clip = 2.0
+potential_reward_clip = 0.25
+potential_distance_alpha = 1.6
+potential_top_k = 4
+potential_topk_decay = 0.5
+potential_max_route_distance = 6.0
+potential_all_claimed_min_melds = 2
+route_distance_delta_weight = 0.0
+# Ordinary shanten is logged but not rewarded; GBMJ needs 8 fan.
+ordinary_distance_delta_weight = 0.0
+distance_delta_clip = 2.0
+dense_ready_reward = 0.0
+dense_near_ready_reward = 0.0
+dense_late_far_penalty = 0.0
+dense_late_push_penalty = 0.0
+dense_late_turn = 10
+dense_near_distance = 2.0
+dense_far_distance = 3.0
+score_delta_reward_scale = 40.0
+score_delta_reward_clip = 2.0
+potential_cache_size = 50000
+potential_cache_clear_every = 1
+# Exact target-table scanning is expensive.  12000 loads only small route
+# tables; larger/high-frequency routes use fast route estimators in rl/reward.py.
+potential_table_max_targets = 12000
+potential_score_mode = "frequency_weighted_topk"
+self_draw_reward = 2.0
+win_reward = 1.5
+deal_in_penalty = -2.0
+other_self_draw_penalty = -1.0
+other_ron_penalty = -0.5
+dangerous_push_penalty = -0.08
+dangerous_push_turn = 10
+dangerous_push_best_distance = 1.0
+# [V4 independent critic clean reward] No-hu hands still need a weak terminal
+# signal: tenpai is better than noten, but both are much smaller than win/loss.
+tenpai_reward = 0.1
+noten_penalty = -0.1
+
+# Frozen Global Reward Predictor potential:
+#   r_grp = clip(weight * (gamma * V_global(s_next) - V_global(s))).
+# GRP is reward shaping only; PPO still trains the independent critic as the
+# value baseline for advantages/returns.
+enable_grp_reward = true
+grp_checkpoint = "checkpoints/grp_v3_global_reward/grp_best.pth"
+grp_reward_weight = 0.20
+grp_reward_gamma = 1.0
+grp_reward_clip = 0.08
+grp_reward_batch_size = 4096
+
+# [V4 RL NaN guard] Keep rollout policy inference in fp32.  AMP can produce
+# non-finite logits during stochastic PPO sampling, which poisons old_log_prob.
+enable_amp_rollout = false
+enable_quick_eval = true
+enable_rule_based_agari_guard = true
+baseline_deterministic = true
+actor_temperature = 0.9
+ppo_logprob_temperature = 0.9
+save_every = 1
+# Select by per-hand rank edge, matching the first/fourth-rate objective.
+best_metric = "round_rank_edge"
+best_metric_mode = "max"
+rank_edge_fourth_penalty = 1.0
