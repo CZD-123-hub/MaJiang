@@ -23,3 +23,8 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+# Local Shangrao Mahjong dataset
+模型代码和上饶麻将数据/shangrao_dataset/
+
+# Large local training log
+模型代码和上饶麻将数据/Mortal_v4/Mortal_gbmj_v4/rl/train_log.txt
